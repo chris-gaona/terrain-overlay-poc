@@ -1,0 +1,488 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>KHND — Terrain + Artificial Height Heatmap (Power Curve)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.5.1/mapbox-gl.css" rel="stylesheet" />
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { position: absolute; inset: 0; }
+    .panel{
+      position:absolute; top:12px; left:12px; z-index:1;
+      background:#fff; padding:10px 12px; border-radius:8px;
+      font: 13px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      box-shadow: 0 4px 12px rgba(0,0,0,.12);
+      max-width: 520px;
+    }
+    .row { display:flex; gap:8px; align-items:center; margin:6px 0; flex-wrap: wrap; }
+    input[type="number"]{ width:150px; }
+    button{ cursor:pointer; }
+    code{ font-size:12px; }
+    .muted{ color:#555; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel">
+    <div><b>KHND / Henderson Executive — Heatmap (Power Curve weights)</b></div>
+    <div class="row">
+      <label>Radius (m)</label>
+      <input id="radius" type="number" value="18520" min="100" step="100" />
+      <span class="muted">(10 nm ≈ 18520 m)</span>
+    </div>
+    <div class="row">
+      <label>Grid step (m)</label>
+      <input id="step" type="number" value="750" min="50" step="50" />
+      <span class="muted">(bigger = faster)</span>
+    </div>
+    <div class="row">
+      <label>Custom boost</label>
+      <input id="boost" type="number" value="2.5" min="0" step="0.1" />
+      <span class="muted">(multiplies custom-point heat weight)</span>
+    </div>
+    <div class="row">
+      <label>Gamma</label>
+      <input id="gamma" type="number" value="3.0" min="1" step="0.1" />
+      <span class="muted">(1=linear, 2–4 makes highs pop)</span>
+    </div>
+    <div class="row">
+      <button id="clear">Clear</button>
+      <span>Click map to set circle center</span>
+    </div>
+    <div id="status"></div>
+    <div class="muted" style="margin-top:6px;">
+      Heatmap weight uses <code>w = ((elev-min)/(max-min))^gamma</code> (clamped), where elev is:<br/>
+      - grid: ground elevation<br/>
+      - custom: top elevation (ground + customHeightM), then multiplied by custom boost (clamped)
+    </div>
+  </div>
+
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.5.1/mapbox-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+  <script>
+    mapboxgl.accessToken = MAPBOX_ACCESS_TOKEN
+
+    // Henderson Executive Airport (KHND) approximate coordinates
+    const KHND = { lng: -115.1343, lat: 35.9728 };
+
+    const map = new mapboxgl.Map({
+      container: "map",
+      style: "mapbox://styles/mapbox/satellite-streets-v11", // "mapbox://styles/mapbox/dark-v11",
+      center: [KHND.lng, KHND.lat],
+      zoom: 11,
+      pitch: 55,
+      bearing: -20
+    });
+
+    const statusEl = document.getElementById("status");
+    const radiusEl = document.getElementById("radius");
+    const stepEl = document.getElementById("step");
+    const boostEl = document.getElementById("boost");
+    const gammaEl = document.getElementById("gamma");
+    const clearBtn = document.getElementById("clear");
+
+    function setStatus(msg) { statusEl.textContent = msg || ""; }
+
+    function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+
+    function waitForIdle() {
+      return new Promise((resolve) => {
+        if (map.loaded() && map.isStyleLoaded() && map.areTilesLoaded()) return resolve();
+        map.once("idle", resolve);
+      });
+    }
+
+    function sampleElevationFast(lng, lat) {
+      const e = map.queryTerrainElevation([lng, lat], { exaggerated: false });
+      return (typeof e === "number" && isFinite(e)) ? e : null;
+    }
+
+    // ---- Custom points near KHND (edit these) ----
+    const CUSTOM_POINTS = {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [KHND.lng + 0.0100, KHND.lat + 0.0040] },
+          properties: { id: "A", label: "Custom A", customHeightM: 120 }
+        },
+        {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [KHND.lng - 0.0120, KHND.lat - 0.0065] },
+          properties: { id: "B", label: "Custom B", customHeightM: 5250 }
+        },
+        {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [KHND.lng + 0.0160, KHND.lat + 0.0100] },
+          properties: { id: "C", label: "Custom C", customHeightM: 60 }
+        }
+      ]
+    };
+
+    function ensureSourcesAndLayers() {
+      // Circle polygon
+      if (!map.getSource("circle")) {
+        map.addSource("circle", { type: "geojson", data: turf.featureCollection([]) });
+      }
+      if (!map.getLayer("circle-fill")) {
+        map.addLayer({
+          id: "circle-fill",
+          type: "fill",
+          source: "circle",
+          paint: { "fill-color": "#2dd4bf", "fill-opacity": 0.12 }
+        });
+      }
+      if (!map.getLayer("circle-line")) {
+        map.addLayer({
+          id: "circle-line",
+          type: "line",
+          source: "circle",
+          paint: { "line-color": "#2dd4bf", "line-width": 2 }
+        });
+      }
+
+      // Heatmap points source (grid + custom contributions)
+      if (!map.getSource("heat-points")) {
+        map.addSource("heat-points", { type: "geojson", data: turf.featureCollection([]) });
+      }
+      if (!map.getLayer("elev-heat")) {
+        map.addLayer({
+          id: "elev-heat",
+          type: "heatmap",
+          source: "heat-points",
+          maxzoom: 15,
+          paint: {
+            "heatmap-weight": ["coalesce", ["get", "w"], 0],
+            "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 8, 0.6, 14, 1.8],
+            "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 8, 12, 14, 45],
+            "heatmap-opacity": 0.85
+          }
+        });
+      }
+
+      // Optional debug points
+      if (!map.getLayer("heat-points-debug")) {
+        map.addLayer({
+          id: "heat-points-debug",
+          type: "circle",
+          source: "heat-points",
+          paint: { "circle-radius": 2, "circle-opacity": 0.06 }
+        });
+      }
+
+      // Airport marker
+      if (!map.getSource("airport")) {
+        map.addSource("airport", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: [{
+              type: "Feature",
+              geometry: { type: "Point", coordinates: [KHND.lng, KHND.lat] },
+              properties: { label: "Henderson Executive (KHND)" }
+            }]
+          }
+        });
+      }
+      if (!map.getLayer("airport-symbol")) {
+        map.addLayer({
+          id: "airport-symbol",
+          type: "symbol",
+          source: "airport",
+          layout: {
+            "text-field": ["get", "label"],
+            "text-size": 13,
+            "text-offset": [0, 1.1],
+            "text-anchor": "top",
+            "icon-image": "airport",
+            "icon-size": 1.1
+          },
+          paint: { "text-halo-width": 1.2 }
+        });
+      }
+
+      // Custom points overlay (clickable)
+      if (!map.getSource("custom-points")) {
+        map.addSource("custom-points", { type: "geojson", data: turf.featureCollection([]) });
+      }
+      if (!map.getLayer("custom-points-circle")) {
+        map.addLayer({
+          id: "custom-points-circle",
+          type: "circle",
+          source: "custom-points",
+          paint: {
+            "circle-radius": 6,
+            "circle-stroke-width": 2,
+            "circle-opacity": 0.95
+          }
+        });
+      }
+      if (!map.getLayer("custom-points-label")) {
+        map.addLayer({
+          id: "custom-points-label",
+          type: "symbol",
+          source: "custom-points",
+          layout: {
+            "text-field": [
+              "format",
+              ["get", "id"], {}, "\n", {},
+              ["to-string", ["round", ["get", "groundElevationM"]]], { "font-scale": 0.85 }, "m + ",
+              ["to-string", ["round", ["get", "customHeightM"]]], { "font-scale": 0.85 }, "m"
+            ],
+            "text-size": 12,
+            "text-offset": [0, 1.2],
+            "text-anchor": "top"
+          },
+          paint: { "text-halo-width": 1.2 }
+        });
+      }
+    }
+
+    function clearAll() {
+      if (map.getSource("circle")) map.getSource("circle").setData(turf.featureCollection([]));
+      if (map.getSource("heat-points")) map.getSource("heat-points").setData(turf.featureCollection([]));
+      if (map.getSource("custom-points")) map.getSource("custom-points").setData(turf.featureCollection([]));
+      setStatus("");
+    }
+    clearBtn.addEventListener("click", clearAll);
+
+    function bindCustomPointPopup() {
+      map.on("click", "custom-points-circle", (e) => {
+        const f = e.features && e.features[0];
+        if (!f) return;
+
+        const p = f.properties || {};
+        const ground = (p.groundElevationM != null) ? Number(p.groundElevationM) : null;
+        const customH = (p.customHeightM != null) ? Number(p.customHeightM) : null;
+        const top = (p.topElevationM != null) ? Number(p.topElevationM) : null;
+        const w = (p.w != null) ? Number(p.w) : null;
+
+        const html =
+          `<b>${p.label || p.id || "Custom point"}</b><br/>` +
+          `Ground elevation: ${ground != null && isFinite(ground) ? ground.toFixed(1) + " m" : "n/a"}<br/>` +
+          `Custom height: ${customH != null && isFinite(customH) ? customH.toFixed(1) + " m" : "n/a"}<br/>` +
+          `Top elevation: ${top != null && isFinite(top) ? top.toFixed(1) + " m" : "n/a"}<br/>` +
+          `Heat weight (w): ${w != null && isFinite(w) ? w.toFixed(3) : "n/a"}`;
+
+        new mapboxgl.Popup()
+          .setLngLat(f.geometry.coordinates)
+          .setHTML(html)
+          .addTo(map);
+      });
+
+      map.on("mouseenter", "custom-points-circle", () => map.getCanvas().style.cursor = "pointer");
+      map.on("mouseleave", "custom-points-circle", () => map.getCanvas().style.cursor = "");
+    }
+
+    async function buildCustomPoints(circlePoly) {
+      const inside = CUSTOM_POINTS.features.filter((f) => turf.booleanPointInPolygon(f, circlePoly));
+      await waitForIdle();
+
+      return {
+        type: "FeatureCollection",
+        features: inside.map((f) => {
+          const [lng, lat] = f.geometry.coordinates;
+          const ground = sampleElevationFast(lng, lat);
+          const customHeightM = Number(f.properties.customHeightM || 0);
+          const groundElevationM = (typeof ground === "number") ? ground : null;
+          const topElevationM = (typeof groundElevationM === "number") ? (groundElevationM + customHeightM) : null;
+
+          return {
+            ...f,
+            properties: {
+              ...f.properties,
+              groundElevationM,
+              topElevationM
+            }
+          };
+        })
+      };
+    }
+
+    function buildGridPoints(circlePoly, stepM) {
+      const bbox = turf.bbox(circlePoly);
+      const cellSideKm = stepM / 1000;
+
+      const grid = turf.pointGrid(bbox, cellSideKm, { units: "kilometers" });
+      const inside = grid.features.filter((pt) => turf.booleanPointInPolygon(pt, circlePoly));
+
+      const MAX_POINTS = 12000;
+      let points = inside;
+      if (points.length > MAX_POINTS) {
+        const stride = Math.ceil(points.length / MAX_POINTS);
+        points = points.filter((_, idx) => idx % stride === 0);
+      }
+      return points;
+    }
+
+    // POWER CURVE weights:
+    //   t = clamp((value - min) / range, 0..1)
+    //   w = t^gamma
+    // Custom points additionally get *boost, then clamped.
+    function mergeIntoHeatPoints(gridPts, gridElevs, customFC, boost, gamma) {
+      const contributed = [];
+
+      for (const e of gridElevs) if (typeof e === "number" && isFinite(e)) contributed.push(e);
+      for (const f of customFC.features) {
+        const top = f.properties.topElevationM;
+        if (typeof top === "number" && isFinite(top)) contributed.push(top);
+      }
+
+      if (!contributed.length) {
+        return { heatFC: turf.featureCollection([]), min: null, max: null };
+      }
+
+      const min = Math.min(...contributed);
+      const max = Math.max(...contributed);
+      const range = Math.max(1e-6, max - min);
+
+      const gridHeat = gridPts.map((pt, i) => {
+        const elev = gridElevs[i];
+        const t = (typeof elev === "number" && isFinite(elev)) ? clamp01((elev - min) / range) : 0;
+        const w = Math.pow(t, gamma);
+
+        return {
+          type: "Feature",
+          geometry: pt.geometry,
+          properties: {
+            kind: "grid",
+            elevation: (typeof elev === "number" ? elev : null),
+            contributedElevation: (typeof elev === "number" ? elev : null),
+            t,   // pre-gamma normalized (debug)
+            w
+          }
+        };
+      });
+
+      const customHeat = customFC.features.map((f) => {
+        const top = f.properties.topElevationM;
+        const t = (typeof top === "number" && isFinite(top)) ? clamp01((top - min) / range) : 0;
+        const baseW = Math.pow(t, gamma);
+        const w = clamp01(baseW * boost);
+
+        return {
+          type: "Feature",
+          geometry: f.geometry,
+          properties: {
+            kind: "custom",
+            elevation: f.properties.groundElevationM,
+            contributedElevation: top,
+            t,
+            w,
+
+            // keep for overlay labels + popups
+            id: f.properties.id,
+            label: f.properties.label,
+            customHeightM: f.properties.customHeightM,
+            groundElevationM: f.properties.groundElevationM,
+            topElevationM: f.properties.topElevationM
+          }
+        };
+      });
+
+      return {
+        heatFC: { type: "FeatureCollection", features: [...gridHeat, ...customHeat] },
+        min, max
+      };
+    }
+
+    async function buildEverything(centerLngLat) {
+      ensureSourcesAndLayers();
+
+      const radiusM = Number(radiusEl.value);
+      const stepM = Number(stepEl.value);
+      const boost = Number(boostEl.value);
+      const gamma = Math.max(1, Number(gammaEl.value) || 1);
+
+      const circle = turf.circle([centerLngLat.lng, centerLngLat.lat], radiusM / 1000, {
+        steps: 128,
+        units: "kilometers"
+      });
+      map.getSource("circle").setData(circle);
+
+      map.fitBounds(turf.bbox(circle), { padding: 40, duration: 450 });
+
+      const gridPts = buildGridPoints(circle, stepM);
+
+      setStatus(`Loading DEM tiles + sampling ${gridPts.length} grid pts…`);
+      await waitForIdle();
+
+      // Grid elevations (pass 1)
+      let gridElevs = gridPts.map((pt) => {
+        const [lng, lat] = pt.geometry.coordinates;
+        return sampleElevationFast(lng, lat);
+      });
+
+      // Retry if many nulls
+      let nullCount = gridElevs.filter((v) => v === null).length;
+      if (nullCount > Math.max(25, gridPts.length * 0.05)) {
+        setStatus(`Waiting for more DEM tiles… (${nullCount} missing)`);
+        await waitForIdle();
+        setStatus(`Resampling grid (pass 2)…`);
+        gridElevs = gridPts.map((pt) => {
+          const [lng, lat] = pt.geometry.coordinates;
+          return sampleElevationFast(lng, lat);
+        });
+        nullCount = gridElevs.filter((v) => v === null).length;
+      }
+
+      setStatus(`Sampling custom points…`);
+      const customFC = await buildCustomPoints(circle);
+      map.getSource("custom-points").setData(customFC);
+
+      const { heatFC, min, max } = mergeIntoHeatPoints(gridPts, gridElevs, customFC, boost, gamma);
+      map.getSource("heat-points").setData(heatFC);
+
+      if (min == null || max == null) {
+        setStatus("No elevation values available.");
+        return;
+      }
+
+      setStatus(
+        `Done. Contributed elevation range: ${min.toFixed(1)}m → ${max.toFixed(1)}m` +
+        ` | gamma=${gamma.toFixed(1)} boost=${boost.toFixed(1)}` +
+        (nullCount ? ` (${nullCount} grid missing)` : ``) +
+        `. Custom pts in circle: ${customFC.features.length}.`
+      );
+    }
+
+    map.on("load", () => {
+      // DEM source + terrain needed for queryTerrainElevation()
+      map.addSource("mapbox-dem", {
+        type: "raster-dem",
+        url: "mapbox://mapbox.mapbox-terrain-dem-v1",
+        tileSize: 512,
+        maxzoom: 14
+      });
+      map.setTerrain({ source: "mapbox-dem", exaggeration: 1.0 });
+
+      // Optional hillshade for context
+      map.addLayer({
+        id: "hillshade",
+        type: "hillshade",
+        source: "mapbox-dem",
+        paint: { "hillshade-exaggeration": 0.35 }
+      });
+
+      ensureSourcesAndLayers();
+      bindCustomPointPopup();
+
+      // Build once initially centered on KHND
+      buildEverything({ lng: KHND.lng, lat: KHND.lat }).catch(console.error);
+
+      // Click to move circle center anywhere
+      map.on("click", async (e) => {
+        try {
+          await buildEverything(e.lngLat);
+        } catch (err) {
+          console.error(err);
+          setStatus(`Error: ${err.message}`);
+        }
+      });
+    });
+  </script>
+</body>
+</html>

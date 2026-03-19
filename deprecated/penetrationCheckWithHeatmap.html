@@ -1,0 +1,1190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>LZ Survey – Segmented Surface + Spokes + Elevation Profile + Risk Heatmap</title>
+  <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+
+  <!-- Mapbox GL JS -->
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.18.1/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.18.1/mapbox-gl.js"></script>
+
+  <!-- Mapbox GL Draw -->
+  <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.css" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.4.3/mapbox-gl-draw.js"></script>
+
+  <!-- Turf.js -->
+  <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+
+  <style>
+    body { margin:0; padding:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #map { position:absolute; top:0; bottom:0; width:100%; }
+
+    .panel{
+      position:absolute; top:12px; left:12px; z-index:10;
+      background: rgba(255,255,255,0.95);
+      border-radius: 12px;
+      box-shadow: 0 8px 22px rgba(0,0,0,0.18);
+      padding: 12px;
+      width: 560px;
+      max-height: calc(100vh - 24px);
+      overflow:auto;
+    }
+    .panel h3{ margin:0 0 10px; font-size:14px; }
+    .row{
+      display:grid;
+      grid-template-columns: 260px 1fr;
+      gap:8px;
+      align-items:center;
+      margin-bottom:8px;
+    }
+    .row label{ font-size:12px; color:#333; }
+    .row input, .row select{
+      width:100%;
+      box-sizing:border-box;
+      padding:6px 8px;
+      font-size:12px;
+      border:1px solid #ddd;
+      border-radius:10px;
+      background:#fff;
+    }
+    .buttons{ display:flex; gap:8px; margin-top:10px; }
+    button{
+      flex:1;
+      border:0;
+      border-radius: 12px;
+      padding: 9px 10px;
+      font-size:12px;
+      cursor:pointer;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+    }
+    button.primary{ background:#111; color:#fff; }
+    button.secondary{ background:#eee; color:#111; }
+    button.tertiary{ background:#e7f2ff; color:#111; }
+    .status{
+      margin-top:10px;
+      padding-top:8px;
+      border-top: 1px solid #eee;
+      font-size:12px;
+      line-height:1.35;
+      max-height: 190px;
+      overflow:auto;
+    }
+    .chips{ display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    .chip{
+      display:flex; align-items:center; gap:6px;
+      padding:6px 10px;
+      background:#f4f4f4;
+      border-radius:999px;
+      font-size:12px;
+      user-select:none;
+    }
+    .chip input{ transform: translateY(1px); }
+    code{ background:#f7f7f7; padding:1px 6px; border-radius:8px; }
+
+    .profile{
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid #eee;
+    }
+    .profile h4{
+      margin: 0 0 8px;
+      font-size: 13px;
+    }
+    #profileCanvas{
+      width: 100%;
+      height: 170px;
+      border-radius: 12px;
+      border: 1px solid #e6e6e6;
+      background: #fff;
+    }
+    .small{
+      font-size: 11px;
+      color:#555;
+      line-height: 1.3;
+      margin-top: 6px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="map"></div>
+
+  <div class="panel">
+    <h3>LZ survey – penetrations + spokes + profile + heatmap</h3>
+
+    <div class="row">
+      <label>LZ center (lng, lat)</label>
+      <input id="lzCoord" value="-115.1343, 35.9728" />
+    </div>
+
+    <div class="row">
+      <label>LZ elevation MSL (m)</label>
+      <input id="lzElevM" type="number" value="0" step="1" />
+    </div>
+
+    <div class="row">
+      <label>Search radius (NM)</label>
+      <input id="radiusNm" type="number" value="10" step="0.1" min="0.1" />
+    </div>
+
+    <div class="row">
+      <label>Ignore within (NM) (no alerts)</label>
+      <input id="ignoreFirstNm" type="number" value="0.25" step="0.05" min="0" />
+    </div>
+
+    <div class="row">
+      <label>Within 1 NM: +X (m)</label>
+      <input id="xWithin1NmM" type="number" value="60" step="1" min="0" />
+    </div>
+
+    <div class="row">
+      <label>Sample spacing (km) (scan)</label>
+      <input id="spacingKm" type="number" value="0.6" step="0.05" min="0.05" />
+    </div>
+
+    <div class="row">
+      <label>Show top N penetrations</label>
+      <input id="topN" type="number" value="150" step="10" min="10" max="1000" />
+    </div>
+
+    <div class="row">
+      <label>Min exceedance to show (m)</label>
+      <input id="minExceedM" type="number" value="5" step="1" min="0" />
+    </div>
+
+    <div class="row">
+      <label>Sector size (deg) + spokes</label>
+      <input id="sectorDeg" type="number" value="30" step="5" min="5" max="90" />
+    </div>
+
+    <div class="row">
+      <label>Heatmap mode</label>
+      <select id="heatmapMode">
+        <option value="rule" selected>Rule exceedance (segmented surface)</option>
+        <option value="terrain">Terrain-only (elevation)</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label>Heatmap point spacing (km)</label>
+      <input id="heatmapSpacingKm" type="number" value="0.35" step="0.05" min="0.05" />
+    </div>
+
+    <div class="chips">
+      <div class="chip"><input id="toggleTerrain" type="checkbox" checked /><label for="toggleTerrain">3D terrain</label></div>
+      <div class="chip"><input id="toggleHeatmap" type="checkbox" checked /><label for="toggleHeatmap">Terrain risk heatmap</label></div>
+      <div class="chip"><input id="toggleSectors" type="checkbox" checked /><label for="toggleSectors">Worst-by-sector labels</label></div>
+      <div class="chip"><input id="toggleObstacles" type="checkbox" checked /><label for="toggleObstacles">Show obstacles</label></div>
+      <div class="chip"><input id="toggleSpokes" type="checkbox" checked /><label for="toggleSpokes">Bearing spokes</label></div>
+    </div>
+
+    <div class="buttons">
+      <button class="primary" id="scanBtn">Scan</button>
+      <button class="secondary" id="clearBtn">Clear scan</button>
+    </div>
+
+    <div class="status" id="status">
+      Ready. Click <b>Scan</b>.<br><br>
+      Rule: <code>d≤1 NM: LZ+X</code>, <code>1–3 NM: 10:1</code>, <code>&gt;3 NM: 20:1</code>.<br>
+      Heatmap can show <b>terrain-only</b> or <b>rule exceedance</b>.
+    </div>
+
+    <div class="profile">
+      <h4>Elevation profile (draw a line)</h4>
+
+      <div class="row">
+        <label>Profile sample step (m)</label>
+        <input id="profileStepM" type="number" value="100" step="25" min="25" />
+      </div>
+
+      <div class="buttons">
+        <button class="tertiary" id="drawProfileBtn">Draw profile line</button>
+        <button class="secondary" id="clearProfileBtn">Clear profile</button>
+      </div>
+
+      <canvas id="profileCanvas" width="960" height="240"></canvas>
+      <div class="small" id="profileMeta">
+        Tip: click <b>Draw profile line</b>, draw a line, double-click to finish. Edit vertices to update the profile.
+      </div>
+    </div>
+  </div>
+
+<script>
+  // =========================
+  // Mapbox setup
+  // =========================
+  mapboxgl.accessToken = MAPBOX_ACCESS_TOKEN
+
+  const map = new mapboxgl.Map({
+    container: 'map',
+    style: 'mapbox://styles/mapbox/satellite-streets-v12',
+    center: [-115.1343, 35.9728],
+    zoom: 11,
+    pitch: 55,
+    bearing: 0
+  });
+  map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+
+  const statusEl = document.getElementById('status');
+  const setStatus = (html) => statusEl.innerHTML = html;
+
+  // Mapbox Draw (profile line)
+  const draw = new MapboxDraw({
+    displayControlsDefault: false,
+    controls: { line_string: true, trash: true }
+  });
+  map.addControl(draw, 'top-right');
+
+  // =========================
+  // Example custom obstacles (replace with your own)
+  // Required properties:
+  // - elev_m: base elevation MSL (m)
+  // - height_m: obstacle height above base (m)
+  // Top MSL = elev_m + height_m
+  // =========================
+  const customObstaclesGeoJSON = {
+    "type":"FeatureCollection",
+    "features":[
+      { "type":"Feature", "properties": { "name":"Tower A", "elev_m": 1280, "height_m": 18 }, "geometry": { "type":"Point", "coordinates":[-115.1290, 35.9765] } },
+      { "type":"Feature", "properties": { "name":"Crane B", "elev_m": 1265, "height_m": 30 }, "geometry": { "type":"Point", "coordinates":[-115.1412, 35.9698] } },
+      { "type":"Feature", "properties": { "name":"Antenna C", "elev_m": 1295, "height_m": 12 }, "geometry": { "type":"Point", "coordinates":[-115.1228, 35.9689] } }
+    ]
+  };
+
+  // =========================
+  // Helpers
+  // =========================
+  const nmToKm = (nm) => nm * 1.852;
+  const kmToM = (km) => km * 1000;
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  function parseLngLat(text) {
+    const parts = text.split(',').map(s => s.trim());
+    if (parts.length !== 2) return null;
+    const lng = Number(parts[0]), lat = Number(parts[1]);
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+    return [lng, lat];
+  }
+
+  function normalize360(deg) {
+    let d = deg % 360;
+    if (d < 0) d += 360;
+    return d;
+  }
+
+  function bearingDeg(fromLngLat, toLngLat) {
+    return turf.bearing(turf.point(fromLngLat), turf.point(toLngLat));
+  }
+
+  async function waitForTerrainReady() {
+    await new Promise(resolve => map.once('idle', resolve));
+    await sleep(60);
+    await new Promise(resolve => map.once('idle', resolve));
+  }
+
+  // Segmented limit surface:
+  // within 1 NM: +X
+  // 1-3 NM: 10:1 slope (rise/run=0.1)
+  // beyond 3 NM: 20:1 slope (rise/run=0.05)
+  function limitMSL_m(lzElevM, xWithin1NmM, distNm) {
+    const base = lzElevM + xWithin1NmM;
+    if (distNm <= 1.0) return base;
+
+    const nmToMeters = 1852.0;
+    const dAfter1 = distNm - 1.0;
+
+    // 1 -> 3 NM segment length is 2 NM
+    const seg10Nm = Math.min(dAfter1, 2.0);
+    const rise10 = (seg10Nm * nmToMeters) * 0.1;
+
+    if (distNm <= 3.0) return base + rise10;
+
+    const dAfter3 = distNm - 3.0;
+    const rise20 = (dAfter3 * nmToMeters) * 0.05;
+
+    const rise10Full = (2.0 * nmToMeters) * 0.1;
+    return base + rise10Full + rise20;
+  }
+
+  // =========================
+  // Sources & layers
+  // =========================
+  const SRC_LZ = 'lz-point';
+  const SRC_RINGS = 'lz-rings';
+  const SRC_OBST = 'custom-obstacles';
+  const SRC_IMPORTANT = 'important-penetrations';
+  const SRC_SECTOR_LABELS = 'sector-worst-labels';
+  const SRC_WORST = 'worst-penetration';
+
+  const SRC_SPOKES = 'bearing-spokes';
+  const SRC_SPOKE_LABELS = 'bearing-spoke-labels';
+
+  const SRC_PROFILE_LINE = 'profile-line';
+  const SRC_PROFILE_MAXPT = 'profile-max-point';
+
+  // Heatmap
+  const SRC_HEAT = 'risk-heat';
+
+  const LYR_RINGS = 'lz-rings-line';
+  const LYR_LZ = 'lz-point-circle';
+  const LYR_OBST = 'obstacles-points';
+
+  // Heatmap layers (keep under points/labels)
+  const LYR_HEAT = 'risk-heat-layer';
+  const LYR_HEAT_CIRC = 'risk-heat-circles';
+
+  // Important points and label layers
+  const LYR_IMPORTANT_BACKING = 'important-pen-backing';
+  const LYR_IMPORTANT = 'important-pen-points';
+  const LYR_SECTOR_LABELS = 'sector-worst-labels';
+  const LYR_WORST = 'worst-label';
+
+  const LYR_SPOKES = 'bearing-spokes-line';
+  const LYR_SPOKE_LABELS = 'bearing-spokes-labels';
+
+  const LYR_PROFILE_LINE = 'profile-line-layer';
+  const LYR_PROFILE_MAXPT = 'profile-max-point-layer';
+
+  function ensureSources() {
+    const addGeo = (id) => {
+      if (!map.getSource(id)) map.addSource(id, { type:'geojson', data: { type:'FeatureCollection', features:[] } });
+    };
+    addGeo(SRC_LZ);
+    addGeo(SRC_RINGS);
+    addGeo(SRC_OBST);
+    addGeo(SRC_IMPORTANT);
+    addGeo(SRC_SECTOR_LABELS);
+    addGeo(SRC_WORST);
+    addGeo(SRC_SPOKES);
+    addGeo(SRC_SPOKE_LABELS);
+    addGeo(SRC_PROFILE_LINE);
+    addGeo(SRC_PROFILE_MAXPT);
+    addGeo(SRC_HEAT);
+  }
+
+  function ensureLayers() {
+    // Heatmap underlays first (so other overlays are on top)
+    if (!map.getLayer(LYR_HEAT)) {
+      map.addLayer({
+        id: LYR_HEAT,
+        type: 'heatmap',
+        source: SRC_HEAT,
+        maxzoom: 13,
+        paint: {
+          'heatmap-weight': [
+            'interpolate', ['linear'], ['get', 'risk'],
+            0, 0,
+            10, 0.3,
+            50, 0.8,
+            150, 1.0
+          ],
+          'heatmap-radius': [
+            'interpolate', ['linear'], ['zoom'],
+            8, 18,
+            11, 28,
+            13, 42
+          ],
+          'heatmap-intensity': [
+            'interpolate', ['linear'], ['zoom'],
+            8, 0.8,
+            12, 1.2,
+            13, 1.6
+          ],
+          'heatmap-opacity': [
+            'interpolate', ['linear'], ['zoom'],
+            7, 0.55,
+            12, 0.55,
+            13, 0.30
+          ],
+          'heatmap-color': [
+            'interpolate', ['linear'], ['heatmap-density'],
+            0.0, 'rgba(0,0,0,0)',
+            0.15, 'rgba(0, 200, 255, 0.35)',
+            0.35, 'rgba(255, 230, 0, 0.55)',
+            0.60, 'rgba(255, 120, 0, 0.65)',
+            0.85, 'rgba(255, 0, 0, 0.75)'
+          ]
+        }
+      });
+    }
+
+    if (!map.getLayer(LYR_HEAT_CIRC)) {
+      map.addLayer({
+        id: LYR_HEAT_CIRC,
+        type: 'circle',
+        source: SRC_HEAT,
+        minzoom: 12.5,
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['zoom'],
+            12.5, 2,
+            16, 6
+          ],
+          'circle-opacity': [
+            'interpolate', ['linear'], ['zoom'],
+            12.5, 0.0,
+            14, 0.35,
+            16, 0.55
+          ],
+          'circle-color': [
+            'interpolate', ['linear'], ['get', 'risk'],
+            0, 'rgba(0,0,0,0)',
+            10, 'rgba(255, 230, 0, 0.7)',
+            50, 'rgba(255, 120, 0, 0.8)',
+            150, 'rgba(255, 0, 0, 0.9)'
+          ]
+        }
+      });
+    }
+
+    if (!map.getLayer(LYR_RINGS)) {
+      map.addLayer({
+        id: LYR_RINGS,
+        type: 'line',
+        source: SRC_RINGS,
+        paint: { 'line-width': 2, 'line-opacity': 0.85, 'line-color': '#ffffff' }
+      });
+    }
+
+    if (!map.getLayer(LYR_SPOKES)) {
+      map.addLayer({
+        id: LYR_SPOKES,
+        type: 'line',
+        source: SRC_SPOKES,
+        paint: { 'line-width': 1.5, 'line-opacity': 0.65, 'line-color': '#ffffff' }
+      });
+    }
+
+    if (!map.getLayer(LYR_SPOKE_LABELS)) {
+      map.addLayer({
+        id: LYR_SPOKE_LABELS,
+        type: 'symbol',
+        source: SRC_SPOKE_LABELS,
+        layout: {
+          'text-field': ['get','label'],
+          'text-size': 13,
+          'text-offset': [0, 0.8],
+          'text-anchor': 'top',
+          'text-allow-overlap': true,
+          'text-ignore-placement': true
+        },
+        paint: {
+          'text-color': '#fff',
+          'text-halo-color': '#000',
+          'text-halo-width': 3,
+          'text-halo-blur': 0.5
+        }
+      });
+    }
+
+    if (!map.getLayer(LYR_LZ)) {
+      map.addLayer({
+        id: LYR_LZ,
+        type: 'circle',
+        source: SRC_LZ,
+        paint: {
+          'circle-radius': 4,
+          'circle-color': '#00d5ff',
+          'circle-stroke-color': '#000',
+          'circle-stroke-width': 2
+        }
+      });
+    }
+
+    if (!map.getLayer(LYR_OBST)) {
+      map.addLayer({
+        id: LYR_OBST,
+        type: 'circle',
+        source: SRC_OBST,
+        paint: {
+          'circle-radius': 4,
+          'circle-color': '#ffd000',
+          'circle-stroke-color': '#000',
+          'circle-stroke-width': 2
+        }
+      });
+    }
+
+    // Backing under important points to help readability
+    if (!map.getLayer(LYR_IMPORTANT_BACKING)) {
+      map.addLayer({
+        id: LYR_IMPORTANT_BACKING,
+        type: 'circle',
+        source: SRC_IMPORTANT,
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['get','exceed_m'],
+            0, 4,
+            25, 7,
+            75, 10,
+            150, 14
+          ],
+          'circle-color': '#000',
+          'circle-opacity': 0.35
+        }
+      });
+    }
+
+    if (!map.getLayer(LYR_IMPORTANT)) {
+      map.addLayer({
+        id: LYR_IMPORTANT,
+        type: 'circle',
+        source: SRC_IMPORTANT,
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['get','exceed_m'],
+            0, 4,
+            25, 7,
+            75, 10,
+            150, 14
+          ],
+          'circle-color': [
+            'match', ['get','kind'],
+            'obstacle', '#ff3b30',
+            /* terrain */ '#ff6a00'
+          ],
+          'circle-opacity': 0.88,
+          'circle-stroke-color': '#000',
+          'circle-stroke-width': 2
+        }
+      });
+    }
+
+    if (!map.getLayer(LYR_WORST)) {
+      map.addLayer({
+        id: LYR_WORST,
+        type: 'symbol',
+        source: SRC_WORST,
+        layout: {
+          'text-field': ['get','label'],
+          'text-size': 20,
+          'text-offset': [0, 1.35],
+          'text-anchor': 'top',
+          'text-allow-overlap': true,
+          'text-ignore-placement': true
+        },
+        paint: {
+          'text-color': '#fff',
+          'text-halo-color': '#000',
+          'text-halo-width': 4,
+          'text-halo-blur': 0.5
+        }
+      });
+    }
+
+    if (!map.getLayer(LYR_SECTOR_LABELS)) {
+      map.addLayer({
+        id: LYR_SECTOR_LABELS,
+        type: 'symbol',
+        source: SRC_SECTOR_LABELS,
+        layout: {
+          'text-field': ['get','label'],
+          'text-size': 14,
+          'text-offset': [0, 1.1],
+          'text-anchor': 'top',
+          'text-allow-overlap': true,
+          'text-ignore-placement': true
+        },
+        paint: {
+          'text-color': '#fff',
+          'text-halo-color': '#000',
+          'text-halo-width': 3,
+          'text-halo-blur': 0.5
+        }
+      });
+    }
+
+    // Profile overlays
+    if (!map.getLayer(LYR_PROFILE_LINE)) {
+      map.addLayer({
+        id: LYR_PROFILE_LINE,
+        type: 'line',
+        source: SRC_PROFILE_LINE,
+        paint: { 'line-width': 4, 'line-opacity': 0.9, 'line-color': '#00e5ff' }
+      });
+    }
+
+    if (!map.getLayer(LYR_PROFILE_MAXPT)) {
+      map.addLayer({
+        id: LYR_PROFILE_MAXPT,
+        type: 'circle',
+        source: SRC_PROFILE_MAXPT,
+        paint: {
+          'circle-radius': 4,
+          'circle-color': '#ffffff',
+          'circle-stroke-color': '#00e5ff',
+          'circle-stroke-width': 3
+        }
+      });
+    }
+  }
+
+  function setGeo(id, data) {
+    const s = map.getSource(id);
+    if (s) s.setData(data);
+  }
+
+  function applyToggles() {
+    const terrainOn = document.getElementById('toggleTerrain').checked;
+    const heatOn = document.getElementById('toggleHeatmap').checked;
+    const obstOn = document.getElementById('toggleObstacles').checked;
+    const sectorsOn = document.getElementById('toggleSectors').checked;
+    const spokesOn = document.getElementById('toggleSpokes').checked;
+
+    map.setTerrain(terrainOn ? { source: 'mapbox-dem', exaggeration: 1.25 } : null);
+
+    if (map.getLayer(LYR_HEAT)) map.setLayoutProperty(LYR_HEAT, 'visibility', heatOn ? 'visible' : 'none');
+    if (map.getLayer(LYR_HEAT_CIRC)) map.setLayoutProperty(LYR_HEAT_CIRC, 'visibility', heatOn ? 'visible' : 'none');
+
+    if (map.getLayer(LYR_OBST)) map.setLayoutProperty(LYR_OBST, 'visibility', obstOn ? 'visible' : 'none');
+    if (map.getLayer(LYR_SECTOR_LABELS)) map.setLayoutProperty(LYR_SECTOR_LABELS, 'visibility', sectorsOn ? 'visible' : 'none');
+    if (map.getLayer(LYR_SPOKES)) map.setLayoutProperty(LYR_SPOKES, 'visibility', spokesOn ? 'visible' : 'none');
+    if (map.getLayer(LYR_SPOKE_LABELS)) map.setLayoutProperty(LYR_SPOKE_LABELS, 'visibility', spokesOn ? 'visible' : 'none');
+  }
+
+  function clearScan() {
+    setGeo(SRC_IMPORTANT, { type:'FeatureCollection', features:[] });
+    setGeo(SRC_SECTOR_LABELS, { type:'FeatureCollection', features:[] });
+    setGeo(SRC_WORST, { type:'FeatureCollection', features:[] });
+    setGeo(SRC_HEAT, { type:'FeatureCollection', features:[] });
+    setStatus('Cleared scan results.');
+  }
+
+  // =========================
+  // Bearing spokes
+  // =========================
+  function updateSpokes(lz, radiusNm, sectorDeg) {
+    const spokes = [];
+    const labels = [];
+    const rKm = nmToKm(radiusNm);
+    const labelKm = rKm * 0.92;
+
+    for (let b = 0; b < 360; b += sectorDeg) {
+      const end = turf.destination(turf.point(lz), rKm, b, { units:'kilometers' }).geometry.coordinates;
+      spokes.push(turf.lineString([lz, end], { bearing_deg: b }));
+      const lab = turf.destination(turf.point(lz), labelKm, b, { units:'kilometers' }).geometry.coordinates;
+      labels.push(turf.point(lab, { label: `${b}°` }));
+    }
+
+    setGeo(SRC_SPOKES, { type:'FeatureCollection', features: spokes });
+    setGeo(SRC_SPOKE_LABELS, { type:'FeatureCollection', features: labels });
+  }
+
+  // =========================
+  // Scan (important points + heatmap)
+  // =========================
+  async function scan() {
+    const lz = parseLngLat(document.getElementById('lzCoord').value);
+    const lzElevM = Number(document.getElementById('lzElevM').value);
+    const radiusNm = Number(document.getElementById('radiusNm').value);
+    const ignoreFirstNm = Number(document.getElementById('ignoreFirstNm').value);
+    const xWithin1NmM = Number(document.getElementById('xWithin1NmM').value);
+    const spacingKm = Number(document.getElementById('spacingKm').value);
+    const topN = Number(document.getElementById('topN').value);
+    const minExceedM = Number(document.getElementById('minExceedM').value);
+    const sectorDeg = Number(document.getElementById('sectorDeg').value);
+
+    const heatmapMode = document.getElementById('heatmapMode').value; // 'rule' or 'terrain'
+    const heatSpacingKm = Number(document.getElementById('heatmapSpacingKm').value);
+
+    if (!lz) return setStatus('Invalid LZ coordinate. Use <code>lng, lat</code>.');
+    if (!Number.isFinite(lzElevM)) return setStatus('Invalid LZ elevation (m).');
+    if (!Number.isFinite(radiusNm) || radiusNm <= 0) return setStatus('Invalid radius (NM).');
+    if (!Number.isFinite(ignoreFirstNm) || ignoreFirstNm < 0) return setStatus('Invalid ignore-first (NM).');
+    if (!Number.isFinite(xWithin1NmM) || xWithin1NmM < 0) return setStatus('Invalid X (m).');
+    if (!Number.isFinite(spacingKm) || spacingKm <= 0) return setStatus('Invalid scan spacing (km).');
+    if (!Number.isFinite(topN) || topN < 10) return setStatus('Invalid top N.');
+    if (!Number.isFinite(minExceedM) || minExceedM < 0) return setStatus('Invalid min exceedance.');
+    if (!Number.isFinite(sectorDeg) || sectorDeg < 5 || sectorDeg > 90) return setStatus('Sector size must be 5–90 degrees.');
+    if (!Number.isFinite(heatSpacingKm) || heatSpacingKm <= 0) return setStatus('Invalid heatmap spacing (km).');
+
+    const radiusKm = nmToKm(radiusNm);
+    const ignoreFirstKm = nmToKm(ignoreFirstNm);
+
+    // LZ marker + rings
+    setGeo(SRC_LZ, turf.point(lz, { name: 'LZ' }));
+    setGeo(SRC_RINGS, {
+      type:'FeatureCollection',
+      features:[
+        turf.circle(lz, nmToKm(1), { steps:128, units:'kilometers' }),
+        turf.circle(lz, nmToKm(3), { steps:128, units:'kilometers' }),
+        turf.circle(lz, radiusKm, { steps:128, units:'kilometers' })
+      ]
+    });
+
+    updateSpokes(lz, radiusNm, sectorDeg);
+
+    // Move camera to load DEM
+    map.easeTo({ center: lz, zoom: Math.max(11, map.getZoom()), duration: 450 });
+    await waitForTerrainReady();
+
+    // Search polygon
+    const searchPoly = turf.circle(lz, radiusKm, { steps: 128, units:'kilometers' });
+    const bbox = turf.bbox(searchPoly);
+
+    // --- Heatmap samples (denser)
+    const heatGrid = turf.pointGrid(bbox, heatSpacingKm, { units:'kilometers' });
+    const heatCandidates = heatGrid.features.filter(f => turf.booleanPointInPolygon(f, searchPoly));
+
+    setStatus(
+      `Scanning…<br>` +
+      `Heatmap samples: <b>${heatCandidates.length}</b> (not drawn as dots)<br>` +
+      `Penetration scan spacing: <b>${spacingKm}</b> km<br>` +
+      `Mode: <b>${heatmapMode === 'rule' ? 'Rule exceedance' : 'Terrain-only'}</b>`
+    );
+
+    // First pass gather terrain samples (for terrain-only scaling)
+    const heatPts = [];
+    let tMin = Infinity, tMax = -Infinity;
+
+    for (const pt of heatCandidates) {
+      const distKm = turf.distance(turf.point(lz), pt, { units:'kilometers' });
+      if (distKm < ignoreFirstKm) continue;
+
+      const coord = pt.geometry.coordinates;
+      const terrainM = map.queryTerrainElevation(coord, { exaggerated:false });
+      if (terrainM === null || !Number.isFinite(terrainM)) continue;
+
+      tMin = Math.min(tMin, terrainM);
+      tMax = Math.max(tMax, terrainM);
+
+      heatPts.push(turf.point(coord, { terrain_m: terrainM, dist_km: distKm }));
+    }
+
+    const terrainRange = Math.max(1, (tMax - tMin));
+    for (const f of heatPts) {
+      const terrainM = f.properties.terrain_m;
+      const distNm = (f.properties.dist_km / 1.852);
+
+      let risk = 0;
+      if (heatmapMode === 'terrain') {
+        // 0..150-ish
+        risk = Math.max(0, ((terrainM - tMin) / terrainRange) * 150);
+      } else {
+        const limit = limitMSL_m(lzElevM, xWithin1NmM, distNm);
+        risk = Math.max(0, terrainM - limit); // meters above limit
+      }
+
+      f.properties.risk = risk;
+      f.properties.terrain_m = Math.round(terrainM);
+    }
+    setGeo(SRC_HEAT, { type:'FeatureCollection', features: heatPts });
+
+    // --- Penetration scan candidates (coarser; still not drawn)
+    const grid = turf.pointGrid(bbox, spacingKm, { units:'kilometers' });
+    const candidates = grid.features.filter(f => turf.booleanPointInPolygon(f, searchPoly));
+
+    const hits = [];
+    let worst = null;
+    let worstExceed = -Infinity;
+
+    const doSectors = document.getElementById('toggleSectors').checked;
+    const sectorCount = Math.ceil(360 / sectorDeg);
+    const sectorWorst = Array.from({ length: sectorCount }, () => ({ exceed: -Infinity, feature: null }));
+
+    // Terrain exceedance hits
+    for (let i = 0; i < candidates.length; i++) {
+      const pt = candidates[i];
+      const distKm = turf.distance(turf.point(lz), pt, { units:'kilometers' });
+      if (distKm < ignoreFirstKm) continue;
+
+      const distNm = distKm / 1.852;
+      const limit = limitMSL_m(lzElevM, xWithin1NmM, distNm);
+
+      const coord = pt.geometry.coordinates;
+      const terrainM = map.queryTerrainElevation(coord, { exaggerated:false });
+      if (terrainM === null || !Number.isFinite(terrainM)) continue;
+
+      const exceed = terrainM - limit;
+      if (exceed >= minExceedM) {
+        const f = turf.point(coord, {
+          kind: 'terrain',
+          exceed_m: Math.round(exceed),
+          terrain_m: Math.round(terrainM),
+          limit_m: Math.round(limit),
+          dist_nm: Number(distNm.toFixed(2))
+        });
+        hits.push(f);
+        if (exceed > worstExceed) { worstExceed = exceed; worst = f; }
+
+        if (doSectors) {
+          const brg = normalize360(bearingDeg(lz, coord));
+          const idx = Math.min(sectorCount - 1, Math.floor(brg / sectorDeg));
+          if (exceed > sectorWorst[idx].exceed) sectorWorst[idx] = { exceed, feature: f };
+        }
+      }
+
+      if (i % 400 === 0 && i !== 0) {
+        setStatus(
+          `Scanning… ${i}/${candidates.length}<br>` +
+          `Hits so far: <b>${hits.length}</b><br>` +
+          (worst ? `Worst so far: <b>+${Math.round(worstExceed)}</b> m` : `Worst so far: none`)
+        );
+        await sleep(0);
+      }
+    }
+
+    // Obstacle exceedance hits
+    for (const o of customObstaclesGeoJSON.features) {
+      const coord = o.geometry.coordinates;
+      const distKm = turf.distance(turf.point(lz), turf.point(coord), { units:'kilometers' });
+      if (distKm > radiusKm || distKm < ignoreFirstKm) continue;
+
+      const distNm = distKm / 1.852;
+      const limit = limitMSL_m(lzElevM, xWithin1NmM, distNm);
+
+      const base = Number(o.properties?.elev_m);
+      const h = Number(o.properties?.height_m);
+      if (!Number.isFinite(base) || !Number.isFinite(h)) continue;
+
+      const top = base + h;
+      const exceed = top - limit;
+
+      if (exceed >= minExceedM) {
+        const f = turf.point(coord, {
+          kind: 'obstacle',
+          name: o.properties?.name ?? '(unnamed)',
+          exceed_m: Math.round(exceed),
+          top_m: Math.round(top),
+          base_m: Math.round(base),
+          height_m: Math.round(h),
+          limit_m: Math.round(limit),
+          dist_nm: Number(distNm.toFixed(2))
+        });
+        hits.push(f);
+        if (exceed > worstExceed) { worstExceed = exceed; worst = f; }
+
+        if (doSectors) {
+          const brg = normalize360(bearingDeg(lz, coord));
+          const idx = Math.min(sectorCount - 1, Math.floor(brg / sectorDeg));
+          if (exceed > sectorWorst[idx].exceed) sectorWorst[idx] = { exceed, feature: f };
+        }
+      }
+    }
+
+    // Important = top N by exceedance
+    hits.sort((a, b) => (b.properties.exceed_m - a.properties.exceed_m));
+    const important = hits.slice(0, topN);
+    setGeo(SRC_IMPORTANT, { type:'FeatureCollection', features: important });
+
+    // Worst overall label
+    if (worst) {
+      const c = worst.geometry.coordinates;
+      const label = (worst.properties.kind === 'obstacle')
+        ? `WORST: OBST +${worst.properties.exceed_m}m (top=${worst.properties.top_m}m, limit=${worst.properties.limit_m}m)`
+        : `WORST: TERR +${worst.properties.exceed_m}m (T=${worst.properties.terrain_m}m, limit=${worst.properties.limit_m}m)`;
+      setGeo(SRC_WORST, turf.point(c, { label }));
+      map.easeTo({ center: c, zoom: Math.max(map.getZoom(), 12), duration: 550 });
+    } else {
+      setGeo(SRC_WORST, { type:'FeatureCollection', features:[] });
+    }
+
+    // Worst-by-sector labels
+    const sectorLabels = [];
+    if (doSectors) {
+      for (let i = 0; i < sectorWorst.length; i++) {
+        const w = sectorWorst[i];
+        if (!w.feature) continue;
+        const c = w.feature.geometry.coordinates;
+        const from = i * sectorDeg;
+        const to = (i + 1) * sectorDeg;
+        sectorLabels.push(turf.point(c, { label: `${from}–${to}°: +${w.feature.properties.exceed_m}m` }));
+      }
+    }
+    setGeo(SRC_SECTOR_LABELS, { type:'FeatureCollection', features: sectorLabels });
+
+    setStatus(
+      `Done.<br>` +
+      `Heatmap points: <b>${heatPts.length}</b><br>` +
+      `Total hits found: <b>${hits.length}</b> (terrain+obstacles)<br>` +
+      `Displayed (top N): <b>${important.length}</b><br>` +
+      (worst ? `Worst exceedance: <b>+${Math.round(worstExceed)}</b> m (${worst.properties.kind.toUpperCase()})` : `Worst exceedance: <b>none</b>`)
+    );
+  }
+
+  // =========================
+  // Elevation profile (draw a line)
+  // =========================
+  const profileCanvas = document.getElementById('profileCanvas');
+  const profileCtx = profileCanvas.getContext('2d');
+  const profileMeta = document.getElementById('profileMeta');
+
+  function clearCanvas() {
+    profileCtx.clearRect(0, 0, profileCanvas.width, profileCanvas.height);
+    profileCtx.fillStyle = '#ffffff';
+    profileCtx.fillRect(0, 0, profileCanvas.width, profileCanvas.height);
+    profileCtx.strokeStyle = '#eeeeee';
+    profileCtx.lineWidth = 1;
+    for (let x = 0; x <= profileCanvas.width; x += 80) {
+      profileCtx.beginPath(); profileCtx.moveTo(x, 0); profileCtx.lineTo(x, profileCanvas.height); profileCtx.stroke();
+    }
+    for (let y = 0; y <= profileCanvas.height; y += 40) {
+      profileCtx.beginPath(); profileCtx.moveTo(0, y); profileCtx.lineTo(profileCanvas.width, y); profileCtx.stroke();
+    }
+  }
+
+  function drawProfileChart(samples) {
+    clearCanvas();
+    if (!samples || samples.length < 2) {
+      profileMeta.textContent = 'No profile line. Click “Draw profile line” and draw a line on the map.';
+      return;
+    }
+
+    const w = profileCanvas.width;
+    const h = profileCanvas.height;
+
+    const padL = 60, padR = 16, padT = 16, padB = 32;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+
+    const maxD = samples[samples.length - 1].dist_m;
+    let minE = Infinity, maxE = -Infinity;
+    for (const s of samples) {
+      minE = Math.min(minE, s.elev_m);
+      maxE = Math.max(maxE, s.elev_m);
+    }
+    if (!Number.isFinite(minE) || !Number.isFinite(maxE) || minE === maxE) {
+      profileMeta.textContent = 'Profile exists but terrain samples are unavailable. Try zooming/panning slightly and edit the line.';
+      return;
+    }
+
+    const range = maxE - minE;
+    minE -= range * 0.08;
+    maxE += range * 0.08;
+
+    const xOf = (d) => padL + (d / maxD) * plotW;
+    const yOf = (e) => padT + (1 - ((e - minE) / (maxE - minE))) * plotH;
+
+    // axes
+    profileCtx.strokeStyle = '#222';
+    profileCtx.lineWidth = 1.2;
+    profileCtx.beginPath();
+    profileCtx.moveTo(padL, padT);
+    profileCtx.lineTo(padL, padT + plotH);
+    profileCtx.lineTo(padL + plotW, padT + plotH);
+    profileCtx.stroke();
+
+    // line
+    profileCtx.strokeStyle = '#0077ff';
+    profileCtx.lineWidth = 2.2;
+    profileCtx.beginPath();
+    for (let i = 0; i < samples.length; i++) {
+      const s = samples[i];
+      const x = xOf(s.dist_m);
+      const y = yOf(s.elev_m);
+      if (i === 0) profileCtx.moveTo(x, y);
+      else profileCtx.lineTo(x, y);
+    }
+    profileCtx.stroke();
+
+    // max marker
+    let maxIdx = 0;
+    for (let i = 1; i < samples.length; i++) if (samples[i].elev_m > samples[maxIdx].elev_m) maxIdx = i;
+    const maxS = samples[maxIdx];
+    const mx = xOf(maxS.dist_m);
+    const my = yOf(maxS.elev_m);
+    profileCtx.fillStyle = '#ff3b30';
+    profileCtx.beginPath();
+    profileCtx.arc(mx, my, 5.5, 0, Math.PI * 2);
+    profileCtx.fill();
+
+    // axis labels
+    profileCtx.fillStyle = '#111';
+    profileCtx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Arial';
+    profileCtx.fillText(`${Math.round(maxE)} m`, 8, padT + 12);
+    profileCtx.fillText(`${Math.round(minE)} m`, 8, padT + plotH);
+    profileCtx.fillText(`0 km`, padL, padT + plotH + 22);
+    profileCtx.fillText(`${(maxD/1000).toFixed(2)} km`, padL + plotW - 60, padT + plotH + 22);
+
+    profileMeta.innerHTML =
+      `Length: <b>${(maxD/1000).toFixed(2)} km</b> • ` +
+      `Min: <b>${Math.round(minE + range*0.08)} m</b> • ` +
+      `Max: <b>${Math.round(maxE - range*0.08)} m</b> • ` +
+      `Peak @ <b>${(maxS.dist_m/1000).toFixed(2)} km</b>`;
+
+    setGeo(SRC_PROFILE_MAXPT, turf.point(maxS.coord, { elev_m: Math.round(maxS.elev_m), dist_m: Math.round(maxS.dist_m) }));
+  }
+
+  async function computeProfileFromLine(lineFeature) {
+    if (!lineFeature || lineFeature.geometry?.type !== 'LineString') {
+      drawProfileChart(null);
+      setGeo(SRC_PROFILE_LINE, { type:'FeatureCollection', features:[] });
+      setGeo(SRC_PROFILE_MAXPT, { type:'FeatureCollection', features:[] });
+      return;
+    }
+
+    setGeo(SRC_PROFILE_LINE, lineFeature);
+
+    const stepM = Number(document.getElementById('profileStepM').value);
+    if (!Number.isFinite(stepM) || stepM < 25) return;
+
+    await waitForTerrainReady();
+
+    const lenKm = turf.length(lineFeature, { units: 'kilometers' });
+    const lenM = lenKm * 1000;
+    const maxSamples = 400;
+    const n = Math.min(maxSamples, Math.max(2, Math.floor(lenM / stepM) + 1));
+
+    const samples = [];
+    for (let i = 0; i < n; i++) {
+      const dM = (lenM * i) / (n - 1);
+      const dKm = dM / 1000;
+      const p = turf.along(lineFeature, dKm, { units: 'kilometers' });
+      const coord = p.geometry.coordinates;
+
+      const elev = map.queryTerrainElevation(coord, { exaggerated: false });
+      if (elev === null || !Number.isFinite(elev)) continue;
+
+      samples.push({ dist_m: dM, elev_m: elev, coord });
+    }
+
+    if (samples.length >= 2) {
+      const firstD = samples[0].dist_m;
+      for (const s of samples) s.dist_m -= firstD;
+    }
+
+    drawProfileChart(samples);
+  }
+
+  function clearProfile() {
+    const all = draw.getAll();
+    for (const f of all.features) draw.delete(f.id);
+    setGeo(SRC_PROFILE_LINE, { type:'FeatureCollection', features:[] });
+    setGeo(SRC_PROFILE_MAXPT, { type:'FeatureCollection', features:[] });
+    drawProfileChart(null);
+  }
+
+  // =========================
+  // Load
+  // =========================
+  map.on('load', async () => {
+    ensureSources();
+
+    // DEM for terrain + queryTerrainElevation
+    map.addSource('mapbox-dem', {
+      type: 'raster-dem',
+      url: 'mapbox://mapbox.mapbox-terrain-dem-v1',
+      tileSize: 512,
+      maxzoom: 14
+    });
+    map.setTerrain({ source: 'mapbox-dem', exaggeration: 1.25 });
+
+    // Sky for pitched views
+    if (!map.getLayer('sky')) {
+      map.addLayer({ id:'sky', type:'sky', paint: { 'sky-type':'atmosphere' } });
+    }
+
+    ensureLayers();
+
+    // Load obstacles
+    setGeo(SRC_OBST, customObstaclesGeoJSON);
+
+    // Initialize LZ overlays
+    const lz = parseLngLat(document.getElementById('lzCoord').value);
+    if (lz) {
+      setGeo(SRC_LZ, turf.point(lz, { name:'LZ' }));
+      const radiusNm = Number(document.getElementById('radiusNm').value);
+      const sectorDeg = Number(document.getElementById('sectorDeg').value);
+
+      setGeo(SRC_RINGS, {
+        type:'FeatureCollection',
+        features:[
+          turf.circle(lz, nmToKm(1), { steps:128, units:'kilometers' }),
+          turf.circle(lz, nmToKm(3), { steps:128, units:'kilometers' }),
+          turf.circle(lz, nmToKm(radiusNm), { steps:128, units:'kilometers' })
+        ]
+      });
+      updateSpokes(lz, radiusNm, sectorDeg);
+    }
+
+    applyToggles();
+    clearCanvas();
+
+    // Popups for important hits
+    map.on('click', LYR_IMPORTANT, (e) => {
+      const f = e.features && e.features[0];
+      if (!f) return;
+
+      const c = f.geometry.coordinates.slice();
+      const kind = f.properties.kind;
+
+      let html = `<b>${kind === 'obstacle' ? 'Obstacle' : 'Terrain'} penetration</b><br>`;
+      html += `Exceed: <b>+${f.properties.exceed_m}</b> m<br>`;
+      html += `Limit: <b>${f.properties.limit_m}</b> m MSL<br>`;
+      html += `Dist: <b>${f.properties.dist_nm}</b> NM<br>`;
+
+      if (kind === 'terrain') {
+        html += `Terrain: <b>${f.properties.terrain_m}</b> m MSL<br>`;
+      } else {
+        html += `Name: <b>${f.properties.name}</b><br>`;
+        html += `Top: <b>${f.properties.top_m}</b> m MSL (base ${f.properties.base_m} + h ${f.properties.height_m})<br>`;
+      }
+      html += `<code>${c[0].toFixed(6)}, ${c[1].toFixed(6)}</code>`;
+
+      new mapboxgl.Popup().setLngLat(c).setHTML(html).addTo(map);
+    });
+    map.on('mouseenter', LYR_IMPORTANT, () => map.getCanvas().style.cursor = 'pointer');
+    map.on('mouseleave', LYR_IMPORTANT, () => map.getCanvas().style.cursor = '');
+
+    // Draw events => profile update
+    map.on('draw.create', () => {
+      const all = draw.getAll();
+      const line = all.features.find(f => f.geometry.type === 'LineString');
+      if (line) computeProfileFromLine(line);
+    });
+    map.on('draw.update', () => {
+      const all = draw.getAll();
+      const line = all.features.find(f => f.geometry.type === 'LineString');
+      if (line) computeProfileFromLine(line);
+    });
+    map.on('draw.delete', () => computeProfileFromLine(null));
+
+    // UI wiring
+    document.getElementById('scanBtn').addEventListener('click', scan);
+    document.getElementById('clearBtn').addEventListener('click', clearScan);
+
+    for (const id of ['toggleTerrain','toggleHeatmap','toggleSectors','toggleObstacles','toggleSpokes']) {
+      document.getElementById(id).addEventListener('change', applyToggles);
+    }
+
+    // Update rings/spokes when key params change
+    for (const id of ['radiusNm','sectorDeg','lzCoord']) {
+      document.getElementById(id).addEventListener('change', () => {
+        const lz = parseLngLat(document.getElementById('lzCoord').value);
+        const radiusNm = Number(document.getElementById('radiusNm').value);
+        const sectorDeg = Number(document.getElementById('sectorDeg').value);
+        if (!lz || !Number.isFinite(radiusNm) || !Number.isFinite(sectorDeg)) return;
+
+        setGeo(SRC_LZ, turf.point(lz, { name:'LZ' }));
+        setGeo(SRC_RINGS, {
+          type:'FeatureCollection',
+          features:[
+            turf.circle(lz, nmToKm(1), { steps:128, units:'kilometers' }),
+            turf.circle(lz, nmToKm(3), { steps:128, units:'kilometers' }),
+            turf.circle(lz, nmToKm(radiusNm), { steps:128, units:'kilometers' })
+          ]
+        });
+        updateSpokes(lz, radiusNm, sectorDeg);
+      });
+    }
+
+    // Profile UI
+    document.getElementById('drawProfileBtn').addEventListener('click', () => {
+      clearProfile();
+      draw.changeMode('draw_line_string');
+      profileMeta.textContent = 'Drawing mode: click to add vertices, double-click to finish.';
+    });
+
+    document.getElementById('clearProfileBtn').addEventListener('click', clearProfile);
+
+    document.getElementById('profileStepM').addEventListener('change', () => {
+      const all = draw.getAll();
+      const line = all.features.find(f => f.geometry.type === 'LineString');
+      if (line) computeProfileFromLine(line);
+    });
+  });
+</script>
+</body>
+</html>

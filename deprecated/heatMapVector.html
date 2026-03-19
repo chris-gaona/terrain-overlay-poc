@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Terrain-RGB Elevation Heat Overlay (min/max ft cutoff) + Satellite Streets</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.18.1/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.18.1/mapbox-gl.js"></script>
+
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { position: absolute; inset: 0; }
+
+    .panel{
+      position:absolute; z-index:2; top:12px; left:12px;
+      width:min(420px, calc(100vw - 24px));
+      background:rgba(255,255,255,0.92);
+      border-radius:12px; padding:12px 12px 10px;
+      box-shadow:0 8px 24px rgba(0,0,0,0.18);
+      font:13px/1.2 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    }
+    .panel h1{ font-size:14px; margin:0 0 10px; }
+    .row{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px; }
+    label{ display:block; font-weight:800; margin-bottom:4px; }
+    input[type="number"]{
+      width:100%; box-sizing:border-box; padding:8px;
+      border-radius:10px; border:1px solid #d3d7dd; background:#fff; outline:none;
+    }
+    input[type="number"]:focus{ border-color:#7aa7ff; }
+    .actions{ display:flex; gap:8px; align-items:center; margin-top:8px; }
+    button{
+      border:0; border-radius:10px; padding:8px 10px;
+      background:#1f6feb; color:#fff; font-weight:800; cursor:pointer;
+    }
+    button.secondary{ background:#5a6472; }
+    .small{ font-size:12px; opacity:0.85; margin-top:6px; }
+    .warn{ color:#9b3b00; font-weight:800; display:none; margin-top:6px; }
+
+    .legend{
+      display:flex; align-items:center; gap:10px;
+      margin-top:10px; padding-top:10px;
+      border-top:1px solid rgba(0,0,0,0.08);
+    }
+    .swatch{
+      height:10px; flex:1; border-radius:999px;
+      background:linear-gradient(90deg,
+        #1b2a6b,#2a5bd7,#00a8ff,#00d1b2,#33cc33,#c8e600,#ffe600,#ffb000,#ff6a00,#e60000
+      );
+      border:1px solid rgba(0,0,0,0.1);
+    }
+    .legendText{ font-size:12px; white-space:nowrap; }
+
+    .readout{
+      margin-top:10px;
+      padding:8px 10px;
+      border-radius:10px;
+      background:rgba(0,0,0,0.06);
+      font-size:12px;
+      display:flex;
+      justify-content:space-between;
+      gap:10px;
+    }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+</head>
+
+<body>
+<div id="map"></div>
+
+<div class="panel">
+  <h1>DEM heat overlay (Terrain-RGB) — only within min/max</h1>
+
+  <div class="row">
+    <div>
+      <label for="minFt">Min elevation (ft)</label>
+      <input id="minFt" type="number" step="50" value="2500" />
+    </div>
+    <div>
+      <label for="maxFt">Max elevation (ft)</label>
+      <input id="maxFt" type="number" step="50" value="3000" />
+    </div>
+  </div>
+
+  <div class="small">
+    Uses Terrain-RGB raster colorization. Outside-range pixels are fully transparent; selected max stays red.
+  </div>
+  <div class="warn" id="warn">Min must be &lt; Max.</div>
+
+  <div class="actions">
+    <button id="apply">Apply</button>
+    <button class="secondary" id="reset">Reset (2500–3000)</button>
+  </div>
+
+  <div class="legend">
+    <div class="legendText"><span id="legendMin">2500</span>ft</div>
+    <div class="swatch" aria-hidden="true"></div>
+    <div class="legendText"><span id="legendMax">3000</span>ft</div>
+  </div>
+
+  <div class="readout">
+    <div>Cursor elevation:</div>
+    <div class="mono" id="elevReadout">—</div>
+  </div>
+</div>
+
+<script>
+  mapboxgl.accessToken = MAPBOX_ACCESS_TOKEN
+
+  const FT_TO_M = 0.3048;
+  const M_TO_FT = 1 / FT_TO_M;
+
+  const minFtEl = document.getElementById("minFt");
+  const maxFtEl = document.getElementById("maxFt");
+  const warnEl = document.getElementById("warn");
+  const legendMinEl = document.getElementById("legendMin");
+  const legendMaxEl = document.getElementById("legendMax");
+  const elevReadoutEl = document.getElementById("elevReadout");
+  const applyBtn = document.getElementById("apply");
+  const resetBtn = document.getElementById("reset");
+
+  function toNum(v, fallback) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  function setLegend(minFt, maxFt) {
+    legendMinEl.textContent = Math.round(minFt);
+    legendMaxEl.textContent = Math.round(maxFt);
+  }
+
+  // 10-step ramp, max = red
+  function rampStops(minM, maxM) {
+    const colors = [
+      "#1b2a6b","#2a5bd7","#00a8ff","#00d1b2","#33cc33",
+      "#c8e600","#ffe600","#ffb000","#ff6a00","#e60000"
+    ];
+    const stops = [];
+    const steps = colors.length - 1;
+    const span = maxM - minM;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      stops.push(minM + t * span, colors[i]);
+    }
+    return stops;
+  }
+
+  // Terrain-RGB decode coefficients commonly used in Mapbox examples:
+  // meters = -10000 + 0.1 * (R*256*256 + G*256 + B)
+  // raster-color-mix uses: mix.r*src.r + mix.g*src.g + mix.b*src.b + mix.a
+  // with src channels normalized; the coefficients below are used in Mapbox examples. :contentReference[oaicite:1]{index=1}
+  const TERRAIN_RGB_MIX_METERS = [1667721.6, 6553.6, 25.6, -10000.0];
+
+  const map = new mapboxgl.Map({
+    container: "map",
+    style: "mapbox://styles/mapbox/satellite-streets-v12",
+    center: [-115.1343, 35.9728],
+    zoom: 11
+  });
+  map.addControl(new mapboxgl.NavigationControl(), "top-right");
+
+  function applyRange() {
+    const minFt = toNum(minFtEl.value, 2500);
+    const maxFt = toNum(maxFtEl.value, 3000);
+
+    if (!(minFt < maxFt)) {
+      warnEl.style.display = "block";
+      return;
+    }
+    warnEl.style.display = "none";
+    setLegend(minFt, maxFt);
+
+    const minM = minFt * FT_TO_M;
+    const maxM = maxFt * FT_TO_M;
+
+    // Narrowing raster-color-range improves LUT precision (256 steps)
+    map.setPaintProperty("elevation-heat-raster", "raster-color-range", [minM, maxM]);
+
+    // Remap min..max so max is always red
+    map.setPaintProperty("elevation-heat-raster", "raster-color", [
+      "interpolate",
+      ["linear"],
+      ["raster-value"],
+      ...rampStops(minM, maxM)
+    ]);
+
+    // Hard cutoff (transparent outside range)
+    map.setPaintProperty("elevation-heat-raster", "raster-opacity", [
+      "case",
+      ["all",
+        [">=", ["raster-value"], minM],
+        ["<=", ["raster-value"], maxM]
+      ],
+      0.85,
+      0.0
+    ]);
+  }
+
+  map.on("style.load", () => {
+    // REQUIRED BY YOU: DEM source + terrain
+    map.addSource('mapbox-dem', {
+      type: 'raster-dem',
+      url: 'mapbox://mapbox.mapbox-terrain-dem-v1',
+      tileSize: 512,
+      maxzoom: 14
+    });
+    map.setTerrain({ source: 'mapbox-dem', exaggeration: 1.25 });
+
+    // Terrain-RGB raster source for colorization
+    map.addSource("terrain-rgb", {
+      type: "raster",
+      url: "mapbox://mapbox.terrain-rgb",
+      tileSize: 256
+    });
+
+    // Colorized elevation overlay
+    map.addLayer({
+      id: "elevation-heat-raster",
+      type: "raster",
+      source: "terrain-rgb",
+      paint: {
+        "raster-color-mix": TERRAIN_RGB_MIX_METERS,
+        "raster-color-range": [0, 8848], // placeholder; overridden by applyRange()
+        "raster-color": ["interpolate", ["linear"], ["raster-value"], 0, "rgba(0,0,0,0)", 1, "rgba(0,0,0,0)"],
+        "raster-opacity": 0.85,
+        "raster-fade-duration": 0
+      }
+    });
+
+    setLegend(2500, 3000);
+    applyRange();
+
+    // Live elevation readout (from terrain DEM, in meters -> feet)
+    map.on("mousemove", (e) => {
+      const m = map.queryTerrainElevation(e.lngLat);
+      if (m === null || m === undefined || !Number.isFinite(m)) {
+        elevReadoutEl.textContent = "—";
+        return;
+      }
+      const ft = m * M_TO_FT;
+      elevReadoutEl.textContent = `${m.toFixed(1)} m / ${ft.toFixed(0)} ft`;
+    });
+  });
+
+  applyBtn.addEventListener("click", () => {
+    if (map.isStyleLoaded() && map.getLayer("elevation-heat-raster")) applyRange();
+  });
+
+  resetBtn.addEventListener("click", () => {
+    minFtEl.value = 2500;
+    maxFtEl.value = 3000;
+    setLegend(2500, 3000);
+    if (map.isStyleLoaded() && map.getLayer("elevation-heat-raster")) applyRange();
+  });
+
+  [minFtEl, maxFtEl].forEach(el => {
+    el.addEventListener("change", () => {
+      if (map.isStyleLoaded() && map.getLayer("elevation-heat-raster")) applyRange();
+    });
+  });
+</script>
+</body>
+</html>

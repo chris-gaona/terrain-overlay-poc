@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mapbox v3.5.1 — GSR Check + Fanning Corridor + Animated Profile</title>
+
+  <!-- Mapbox GL JS v3.5.1 -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/mapbox-gl/3.5.1/mapbox-gl.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mapbox-gl/3.5.1/mapbox-gl.js"></script>
+
+  <!-- Turf.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { position: absolute; inset: 0; }
+
+    .ui {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 2;
+      width: 400px;
+      background: rgba(20, 20, 24, 0.88);
+      color: #fff;
+      padding: 12px;
+      border-radius: 12px;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+      backdrop-filter: blur(8px);
+    }
+
+    .ui h2 {
+      font-size: 14px;
+      margin: 0 0 10px;
+      font-weight: 650;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+    }
+
+    .badge, .pill {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.08);
+      opacity: 0.95;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .pill { font-size: 12px; }
+
+    .group { margin-bottom: 10px; }
+    .row { display:flex; align-items:center; justify-content:space-between; gap: 10px; }
+    label { font-size: 12px; opacity: 0.9; }
+    input[type="range"] { width: 100%; }
+
+    .grid2 {
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .field {
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.06);
+      border-radius: 10px;
+      padding: 8px;
+    }
+    .field label { display:block; font-size: 11px; opacity: 0.75; margin-bottom: 6px; }
+    .field input {
+      width: 100%;
+      border: 1px solid rgba(255,255,255,0.16);
+      background: rgba(0,0,0,0.18);
+      color: #fff;
+      border-radius: 8px;
+      padding: 7px 8px;
+      font-size: 12px;
+      outline: none;
+    }
+
+    .btnRow { display:grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+    .btn {
+      width: 100%;
+      padding: 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.12);
+      color: white;
+      font-weight: 650;
+      cursor: pointer;
+      user-select: none;
+    }
+    .btn.secondary { background: rgba(255,255,255,0.08); font-weight: 600; }
+
+    .status {
+      font-size: 12px;
+      opacity: 0.92;
+      margin-top: 8px;
+      line-height: 1.25;
+      font-variant-numeric: tabular-nums;
+    }
+    .hint {
+      font-size: 11px;
+      opacity: 0.72;
+      margin-top: 8px;
+      line-height: 1.25;
+    }
+
+    .profileWrap {
+      margin-top: 10px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.06);
+      border-radius: 12px;
+      padding: 8px;
+    }
+    .profileHead {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .profileHead .title {
+      font-size: 12px;
+      opacity: 0.85;
+      font-weight: 650;
+    }
+    canvas { display:block; width: 100%; height: 160px; border-radius: 10px; background: rgba(0,0,0,0.18); }
+  </style>
+</head>
+
+<body>
+  <div id="map"></div>
+
+  <div class="ui">
+    <h2>
+      GSR + Fan Corridor + Profile (v3.5.1)
+      <span class="badge" id="lzBadge">LZ: click map</span>
+    </h2>
+
+    <!-- Heat band UI -->
+    <div class="group">
+      <div class="row">
+        <label for="minSlider">Heat min elevation</label>
+        <span id="minVal" class="pill">0m</span>
+      </div>
+      <input id="minSlider" type="range" min="0" max="4500" value="0" step="50" />
+    </div>
+
+    <div class="group">
+      <div class="row">
+        <label for="maxSlider">Heat max elevation</label>
+        <span id="maxVal" class="pill">4500m</span>
+      </div>
+      <input id="maxSlider" type="range" min="0" max="4500" value="4500" step="50" />
+    </div>
+
+    <div class="row" style="margin-bottom:10px;">
+      <label>Heat shows</label>
+      <span id="rangeVal" class="pill">0m – 4500m</span>
+    </div>
+
+    <!-- GSR params -->
+    <div class="grid2">
+      <div class="field">
+        <label>Glide slope (X:1)</label>
+        <input id="slopeRatio" type="number" value="35" min="1" step="1" />
+      </div>
+      <div class="field">
+        <label>Heading (deg)</label>
+        <input id="headingDeg" type="number" value="256" min="0" max="359" step="1" />
+      </div>
+
+      <div class="field">
+        <label>Width at LZ (ft)</label>
+        <input id="widthNearFt" type="number" value="100" min="10" step="10" />
+      </div>
+      <div class="field">
+        <label>Width at far end (ft)</label>
+        <input id="widthFarFt" type="number" value="1000" min="10" step="10" />
+      </div>
+
+      <div class="field">
+        <label>Range (NM)</label>
+        <input id="rangeNm" type="number" value="3" min="0.5" step="0.5" />
+      </div>
+      <div class="field">
+        <label>Sample step (m)</label>
+        <input id="stepM" type="number" value="75" min="10" step="5" />
+      </div>
+
+      <div class="field" style="grid-column: 1 / span 2;">
+        <label>Cross samples per station (odd number)</label>
+        <input id="crossSamples" type="number" value="9" min="3" step="2" />
+      </div>
+
+      <div class="field" style="grid-column: 1 / span 2;">
+        <label>Ignore first distance (ft)</label>
+        <input id="ignoreFirstFt" type="number" value="200" min="0" step="50" />
+      </div>
+    </div>
+
+    <div class="btnRow">
+      <button id="runGsr" class="btn">Run GSR check</button>
+      <button id="animate" class="btn secondary">Animate</button>
+      <button id="clear" class="btn secondary" style="grid-column:1/span 2;">Clear</button>
+    </div>
+
+    <div id="status" class="status"></div>
+
+    <div class="profileWrap">
+      <div class="profileHead">
+        <div class="title">Profile (max terrain in corridor vs GSR surface)</div>
+        <span class="badge" id="profileBadge">—</span>
+      </div>
+      <canvas id="profile" width="800" height="320"></canvas>
+    </div>
+
+    <div class="hint">
+      Click map to set LZ. Corridor fans from near→far width along the heading.
+      Red dots are penetration samples; worst penetration is labeled. Animate shows a moving marker + profile cursor.
+    </div>
+  </div>
+
+  <script>
+    // Token (yours)
+    mapboxgl.accessToken = MAPBOX_ACCESS_TOKEN
+
+    const map = new mapboxgl.Map({
+      container: "map",
+      style: "mapbox://styles/mapbox/satellite-streets-v11",
+      center: [-115.1343, 35.9728],
+      zoom: 12,
+      pitch: 70
+    });
+
+    map.addControl(new mapboxgl.NavigationControl({ visualizePitch: true }), "top-right");
+
+    // --- constants ---
+    const ftPerM = 3.280839895;
+    const mPerFt = 0.3048;
+    const mPerNm = 1852;
+
+    // --- UI ---
+    const minSlider = document.getElementById("minSlider");
+    const maxSlider = document.getElementById("maxSlider");
+    const minValEl = document.getElementById("minVal");
+    const maxValEl = document.getElementById("maxVal");
+    const rangeValEl = document.getElementById("rangeVal");
+
+    const slopeRatioEl = document.getElementById("slopeRatio");
+    const headingDegEl = document.getElementById("headingDeg");
+    const widthNearFtEl = document.getElementById("widthNearFt");
+    const widthFarFtEl = document.getElementById("widthFarFt");
+    const rangeNmEl = document.getElementById("rangeNm");
+    const stepMEl = document.getElementById("stepM");
+    const crossSamplesEl = document.getElementById("crossSamples");
+    const ignoreFirstFtEl = document.getElementById("ignoreFirstFt");
+
+    const runBtn = document.getElementById("runGsr");
+    const animBtn = document.getElementById("animate");
+    const clearBtn = document.getElementById("clear");
+    const statusEl = document.getElementById("status");
+    const lzBadge = document.getElementById("lzBadge");
+
+    const profileCanvas = document.getElementById("profile");
+    const ctx = profileCanvas.getContext("2d");
+    const profileBadge = document.getElementById("profileBadge");
+
+    // --- state ---
+    let lzLngLat = null; // [lng, lat]
+    let lastRun = null;  // for animation/profile
+    let anim = { enabled: false, raf: null, t0: 0, durationMs: 6500 };
+
+    // --- sources/layers ---
+    const SRC_LZ = "lz";
+    const LYR_LZ = "lz";
+
+    const SRC_CENTER = "centerline";
+    const LYR_CENTER = "centerline";
+
+    const SRC_FAN = "fan";
+    const LYR_FAN = "fan";
+
+    const SRC_PEN = "penetrations";
+    const LYR_PEN = "penetrations";
+
+    const SRC_WORST = "worst";
+    const LYR_WORST = "worst";
+
+    const SRC_ANIM = "anim";
+    const LYR_ANIM = "anim";
+
+    function normalizeHeading(h) {
+      let x = Number.isFinite(h) ? h : 0;
+      x = ((x % 360) + 360) % 360;
+      return x;
+    }
+
+    // Dynamic heat color: red only in top 10% of band
+    function buildDynamicFillColorTop10Red(minH, maxH) {
+      const span = Math.max(1, maxH - minH);
+      const p0 = minH;
+      const p60 = minH + span * 0.60;
+      const p80 = minH + span * 0.80;
+      const p90 = minH + span * 0.90;
+      const p100 = maxH;
+      return ["interpolate", ["linear"], ["get","ele"],
+        p0, "#2b83ba",
+        p60, "#abdda4",
+        p80, "#ffffbf",
+        p90, "#fdae61",
+        p100, "#d7191c"
+      ];
+    }
+
+    function applyHeatRangeFilter() {
+      let minH = parseInt(minSlider.value, 10);
+      let maxH = parseInt(maxSlider.value, 10);
+      if (minH > maxH) { maxH = minH; maxSlider.value = String(maxH); }
+
+      minValEl.textContent = `${minH}m`;
+      maxValEl.textContent = `${maxH}m`;
+      rangeValEl.textContent = `${minH}m – ${maxH}m`;
+
+      const heatBand = ["all", [">=", ["get","ele"], minH], ["<=", ["get","ele"], maxH]];
+      const contourMin = [">=", ["get","ele"], minH];
+
+      if (map.getLayer("elevation-heatmap")) {
+        map.setFilter("elevation-heatmap", heatBand);
+        map.setPaintProperty("elevation-heatmap", "fill-color", buildDynamicFillColorTop10Red(minH, maxH));
+      }
+      if (map.getLayer("contour-lines")) {
+        map.setFilter("contour-lines", contourMin);
+      }
+    }
+
+    function ensureLayers() {
+      if (!map.getSource(SRC_LZ)) {
+        map.addSource(SRC_LZ, { type:"geojson", data:{ type:"FeatureCollection", features:[] } });
+        map.addLayer({
+          id: LYR_LZ, type:"circle", source: SRC_LZ,
+          paint: { "circle-radius": 7, "circle-color": "#fff", "circle-stroke-color":"#000", "circle-stroke-width": 2 }
+        });
+      }
+
+      if (!map.getSource(SRC_CENTER)) {
+        map.addSource(SRC_CENTER, { type:"geojson", data:{ type:"FeatureCollection", features:[] } });
+        map.addLayer({
+          id: LYR_CENTER, type:"line", source: SRC_CENTER,
+          paint: { "line-color": "rgba(255,255,255,0.92)", "line-width": 2 }
+        });
+      }
+
+      if (!map.getSource(SRC_FAN)) {
+        map.addSource(SRC_FAN, { type:"geojson", data:{ type:"FeatureCollection", features:[] } });
+        map.addLayer({
+          id: LYR_FAN, type:"fill", source: SRC_FAN,
+          paint: {
+            "fill-color": "rgba(255,255,255,0.10)",     // updated pass/fail
+            "fill-outline-color": "rgba(255,255,255,0.65)"
+          }
+        });
+      }
+
+      if (!map.getSource(SRC_PEN)) {
+        map.addSource(SRC_PEN, { type:"geojson", data:{ type:"FeatureCollection", features:[] } });
+        map.addLayer({
+          id: LYR_PEN, type:"circle", source: SRC_PEN,
+          paint: {
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 3, 14, 7],
+            "circle-color": "#ff2d2d",
+            "circle-opacity": 0.92,
+            "circle-stroke-color": "#000",
+            "circle-stroke-width": 1
+          }
+        });
+      }
+
+      if (!map.getSource(SRC_WORST)) {
+        map.addSource(SRC_WORST, { type:"geojson", data:{ type:"FeatureCollection", features:[] } });
+        map.addLayer({
+          id: LYR_WORST, type:"symbol", source: SRC_WORST,
+          layout: {
+            "text-field": ["format",
+              "WORST\n", {},
+              ["to-string", ["round", ["get","pen_ft"]]], {"font-scale": 1.1},
+              " ft", {"font-scale": 1.1}
+            ],
+            "text-size": 12,
+            "text-offset": [0, -1.6],
+            "text-anchor": "top",
+            "icon-image": "marker-15",
+            "icon-size": 1.2,
+            "icon-anchor": "bottom"
+          },
+          paint: {
+            "text-halo-color": "rgba(0,0,0,0.85)",
+            "text-halo-width": 2,
+            "text-color": "#fff"
+          }
+        });
+      }
+
+      if (!map.getSource(SRC_ANIM)) {
+        map.addSource(SRC_ANIM, { type:"geojson", data:{ type:"FeatureCollection", features:[] } });
+        map.addLayer({
+          id: LYR_ANIM, type:"circle", source: SRC_ANIM,
+          paint: { "circle-radius": 6, "circle-color": "#00e5ff", "circle-stroke-color":"#000", "circle-stroke-width": 2 }
+        });
+      }
+    }
+
+    function setFC(src, fc) {
+      const s = map.getSource(src);
+      if (s) s.setData(fc);
+    }
+
+    // Corridor width fans linearly: width(t) from near -> far with t in [0,1]
+    function widthAtAlongFt(alongFt, maxAlongFt, nearFt, farFt) {
+      const t = maxAlongFt <= 0 ? 0 : Math.max(0, Math.min(1, alongFt / maxAlongFt));
+      return nearFt + (farFt - nearFt) * t;
+    }
+
+    function buildFanningCorridorPolygon(lz, heading, rangeNm, nearFt, farFt) {
+      const lzPt = turf.point(lz);
+      const end = turf.destination(lzPt, rangeNm, heading, { units: "nauticalmiles" }).geometry.coordinates;
+
+      const halfNearM = (nearFt / 2) * mPerFt;
+      const halfFarM  = (farFt  / 2) * mPerFt;
+
+      const leftNear = turf.destination(lzPt, halfNearM/1000, heading - 90, { units:"kilometers" }).geometry.coordinates;
+      const rightNear = turf.destination(lzPt, halfNearM/1000, heading + 90, { units:"kilometers" }).geometry.coordinates;
+
+      const endPt = turf.point(end);
+      const leftFar = turf.destination(endPt, halfFarM/1000, heading - 90, { units:"kilometers" }).geometry.coordinates;
+      const rightFar = turf.destination(endPt, halfFarM/1000, heading + 90, { units:"kilometers" }).geometry.coordinates;
+
+      // Simple trapezoid (fan)
+      return turf.polygon([[
+        leftNear,
+        rightNear,
+        rightFar,
+        leftFar,
+        leftNear
+      ]]);
+    }
+
+    function buildCenterline(lz, heading, rangeNm) {
+      const lzPt = turf.point(lz);
+      const end = turf.destination(lzPt, rangeNm, heading, { units: "nauticalmiles" }).geometry.coordinates;
+      return turf.lineString([lz, end]);
+    }
+
+    function drawProfile(run, cursorIdx = null) {
+      const W = profileCanvas.width, H = profileCanvas.height;
+      ctx.clearRect(0,0,W,H);
+      ctx.fillStyle = "rgba(0,0,0,0.18)";
+      ctx.fillRect(0,0,W,H);
+
+      if (!run || !run.alongM.length) {
+        profileBadge.textContent = "—";
+        ctx.fillStyle = "rgba(255,255,255,0.75)";
+        ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial";
+        ctx.fillText("Run the GSR check to see a profile.", 18, 36);
+        return;
+      }
+
+      const padL=50, padR=12, padT=12, padB=30;
+      const plotW = W-padL-padR, plotH = H-padT-padB;
+
+      const xMaxM = run.alongM[run.alongM.length-1];
+      const xMaxNm = xMaxM / mPerNm;
+
+      let yMin=Infinity, yMax=-Infinity;
+      for (let i=0;i<run.alongM.length;i++){
+        yMin = Math.min(yMin, run.surfaceFt[i], run.terrainFtMax[i]);
+        yMax = Math.max(yMax, run.surfaceFt[i], run.terrainFtMax[i]);
+      }
+      const yPad = Math.max(50, (yMax-yMin)*0.10);
+      yMin -= yPad; yMax += yPad;
+
+      const xToPx = (nm) => padL + (nm / xMaxNm) * plotW;
+      const yToPx = (ft) => padT + (1 - (ft-yMin)/(yMax-yMin)) * plotH;
+
+      // grid
+      ctx.strokeStyle = "rgba(255,255,255,0.10)";
+      ctx.lineWidth = 1;
+      for (let g=0; g<=5; g++){
+        const y = padT + (g/5)*plotH;
+        ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(padL+plotW,y); ctx.stroke();
+      }
+      for (let g=0; g<=5; g++){
+        const x = padL + (g/5)*plotW;
+        ctx.beginPath(); ctx.moveTo(x,padT); ctx.lineTo(x,padT+plotH); ctx.stroke();
+      }
+
+      // axes
+      ctx.fillStyle = "rgba(255,255,255,0.65)";
+      ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial";
+      ctx.fillText("ft", 14, padT + 12);
+      ctx.fillText("NM", padL + plotW - 22, H - 8);
+
+      // y ticks
+      for (let g=0; g<=4; g++){
+        const ft = yMin + (1 - g/4) * (yMax - yMin);
+        ctx.fillText(String(Math.round(ft)), 6, yToPx(ft)+4);
+      }
+      // x ticks
+      for (let g=0; g<=4; g++){
+        const nm = (g/4) * xMaxNm;
+        ctx.fillText(nm.toFixed(1), xToPx(nm)-10, H-8);
+      }
+
+      // penetration shading
+      ctx.fillStyle = "rgba(255,45,45,0.18)";
+      for (let i=0;i<run.alongM.length-1;i++){
+        if (run.terrainFtMax[i] > run.surfaceFt[i]) {
+          const x0 = xToPx(run.alongM[i]/mPerNm);
+          const x1 = xToPx(run.alongM[i+1]/mPerNm);
+          const ySurf = yToPx(run.surfaceFt[i]);
+          const yTer = yToPx(run.terrainFtMax[i]);
+          const yTop = Math.min(ySurf, yTer);
+          const yBot = Math.max(ySurf, yTer);
+          ctx.fillRect(x0, yTop, Math.max(1, x1-x0), yBot-yTop);
+        }
+      }
+
+      // terrain line
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i=0;i<run.alongM.length;i++){
+        const x = xToPx(run.alongM[i]/mPerNm);
+        const y = yToPx(run.terrainFtMax[i]);
+        if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+
+      // surface line
+      ctx.strokeStyle = "rgba(0,229,255,0.92)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i=0;i<run.alongM.length;i++){
+        const x = xToPx(run.alongM[i]/mPerNm);
+        const y = yToPx(run.surfaceFt[i]);
+        if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+
+      if (cursorIdx !== null && cursorIdx >= 0 && cursorIdx < run.alongM.length) {
+        const x = xToPx(run.alongM[cursorIdx]/mPerNm);
+        ctx.strokeStyle = "rgba(0,229,255,0.75)";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT+plotH); ctx.stroke();
+
+        const ter = run.terrainFtMax[cursorIdx];
+        const surf = run.surfaceFt[cursorIdx];
+        const pen = Math.max(0, ter - surf);
+
+        ctx.fillStyle = "rgba(0,229,255,0.95)";
+        ctx.beginPath(); ctx.arc(x, yToPx(surf), 4, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.beginPath(); ctx.arc(x, yToPx(ter), 4, 0, Math.PI*2); ctx.fill();
+
+        profileBadge.textContent = `${(run.alongM[cursorIdx]/mPerNm).toFixed(2)} NM | pen ${pen.toFixed(0)} ft`;
+      } else {
+        profileBadge.textContent = `${xMaxNm.toFixed(1)} NM span`;
+      }
+    }
+
+    function stopAnimation() {
+      anim.enabled = false;
+      if (anim.raf) cancelAnimationFrame(anim.raf);
+      anim.raf = null;
+      setFC(SRC_ANIM, { type:"FeatureCollection", features:[] });
+      drawProfile(lastRun, null);
+    }
+
+    function startAnimation() {
+      if (!lastRun || !lastRun.pathCoords || !lastRun.pathCoords.length) {
+        statusEl.textContent = "Run a GSR check first.";
+        return;
+      }
+      stopAnimation();
+      anim.enabled = true;
+      anim.t0 = performance.now();
+
+      const N = lastRun.pathCoords.length;
+
+      const tick = (t) => {
+        if (!anim.enabled) return;
+
+        const u = Math.min(1, (t - anim.t0) / anim.durationMs);
+        const idx = Math.min(N - 1, Math.floor(u * (N - 1)));
+
+        const coord = lastRun.pathCoords[idx];
+        setFC(SRC_ANIM, {
+          type:"FeatureCollection",
+          features:[{ type:"Feature", properties:{}, geometry:{ type:"Point", coordinates: coord } }]
+        });
+
+        drawProfile(lastRun, idx);
+
+        if (u >= 1) { anim.enabled = false; anim.raf = null; return; }
+        anim.raf = requestAnimationFrame(tick);
+      };
+
+      anim.raf = requestAnimationFrame(tick);
+    }
+
+    async function runGsrCheck() {
+      if (!lzLngLat) { statusEl.textContent = "Click the map to set the LZ first."; return; }
+      stopAnimation();
+
+      const slopeRatio = Math.max(1, parseFloat(slopeRatioEl.value) || 35);
+      const heading = normalizeHeading(parseFloat(headingDegEl.value));
+      const widthNearFt = Math.max(10, parseFloat(widthNearFtEl.value) || 100);
+      const widthFarFt  = Math.max(10, parseFloat(widthFarFtEl.value) || 1000);
+      const rangeNm = Math.max(0.1, parseFloat(rangeNmEl.value) || 3);
+      const stepM = Math.max(10, parseFloat(stepMEl.value) || 75);
+
+      let crossSamples = parseInt(crossSamplesEl.value, 10);
+      if (!Number.isFinite(crossSamples)) crossSamples = 9;
+      crossSamples = Math.max(3, crossSamples);
+      if (crossSamples % 2 === 0) crossSamples += 1; // force odd
+      crossSamplesEl.value = String(crossSamples);
+
+      statusEl.textContent = "Running… (zoom in if elevations return null)";
+      runBtn.disabled = true;
+
+      const lzEleM = map.queryTerrainElevation(lzLngLat, { exaggerated: false });
+      if (lzEleM == null) {
+        statusEl.textContent = "Could not read terrain elevation at LZ. Zoom in a bit and try again.";
+        runBtn.disabled = false;
+        return;
+      }
+
+      const lzEleFt = lzEleM * ftPerM;
+      const maxRangeM = rangeNm * mPerNm;
+      const maxRangeFt = maxRangeM * ftPerM;
+
+      // Draw approach geometry (fan + centerline)
+      const fanPoly = buildFanningCorridorPolygon(lzLngLat, heading, rangeNm, widthNearFt, widthFarFt);
+      const centerline = buildCenterline(lzLngLat, heading, rangeNm);
+
+      setFC(SRC_FAN, { type:"FeatureCollection", features:[fanPoly] });
+      setFC(SRC_CENTER, { type:"FeatureCollection", features:[centerline] });
+      setFC(SRC_LZ, { type:"FeatureCollection", features:[turf.point(lzLngLat)] });
+
+      // Profile arrays
+      const alongArr = [];
+      const surfaceArr = [];
+      const terrMaxArr = [];
+      const pathCoords = [];
+
+      // Penetration points
+      const pens = [];
+      let worst = null; // { penFt, coords, alongFt }
+      let sampled = 0;
+
+      const lzPt = turf.point(lzLngLat);
+
+      // Cross-track sample spacing at each station based on current width
+      for (let alongM = 0; alongM <= maxRangeM; alongM += stepM) {
+        const alongFt = alongM * ftPerM;
+
+        const ignoreFirstFt = Math.max(0, parseFloat(ignoreFirstFtEl?.value) || 200);
+        const ignoreThisStation = alongFt < ignoreFirstFt;
+
+        const surfaceFt = lzEleFt + (alongFt / slopeRatio);
+        const surfaceM = surfaceFt / ftPerM;
+
+        const pAlong = turf.destination(lzPt, alongM / 1000, heading, { units: "kilometers" });
+        const centerCoord = pAlong.geometry.coordinates;
+        pathCoords.push(centerCoord);
+
+        const curWidthFt = widthAtAlongFt(alongFt, maxRangeFt, widthNearFt, widthFarFt);
+        const halfWidthM = (curWidthFt / 2) * mPerFt;
+
+        let terrFtMax = -Infinity;
+
+        // Sample crossSamples points from -half..+half
+        for (let i = 0; i < crossSamples; i++) {
+          const frac = (crossSamples === 1) ? 0 : (i / (crossSamples - 1)); // 0..1
+          const crossM = (frac * 2 - 1) * halfWidthM; // -half..+half
+
+          sampled++;
+
+          const crossBearing = crossM >= 0 ? (heading + 90) : (heading - 90);
+          const p = turf.destination(pAlong, Math.abs(crossM) / 1000, crossBearing, { units: "kilometers" });
+          const coords = p.geometry.coordinates;
+
+          const eleM = map.queryTerrainElevation(coords, { exaggerated: false });
+          if (eleM == null) continue;
+
+          const eleFt = eleM * ftPerM;
+          terrFtMax = Math.max(terrFtMax, eleFt);
+
+          const penFt = eleFt - surfaceFt;
+          const toleranceFt = 5;
+          // Ignore “penetrations” right at the start of the corridor
+          if (!ignoreThisStation && penFt > toleranceFt) {
+            pens.push({
+              type:"Feature",
+              properties:{ penetration_ft: penFt },
+              geometry:{ type:"Point", coordinates: coords }
+            });
+            if (!worst || penFt > worst.penFt) worst = { penFt, coords, alongFt };
+          }
+        }
+
+        alongArr.push(alongM);
+        surfaceArr.push(surfaceFt);
+        terrMaxArr.push(terrFtMax === -Infinity ? surfaceFt : terrFtMax);
+
+        if (alongM % (stepM * 12) === 0) await new Promise(r => setTimeout(r, 0));
+      }
+
+      setFC(SRC_PEN, { type:"FeatureCollection", features: pens });
+
+      if (worst) {
+        setFC(SRC_WORST, {
+          type:"FeatureCollection",
+          features:[{
+            type:"Feature",
+            properties:{ pen_ft: worst.penFt },
+            geometry:{ type:"Point", coordinates: worst.coords }
+          }]
+        });
+      } else {
+        setFC(SRC_WORST, { type:"FeatureCollection", features:[] });
+      }
+
+      const fail = pens.length > 0;
+      map.setPaintProperty(LYR_FAN, "fill-color", fail ? "rgba(255,45,45,0.18)" : "rgba(0,255,120,0.16)");
+
+      lastRun = {
+        alongM: alongArr,
+        surfaceFt: surfaceArr,
+        terrainFtMax: terrMaxArr,
+        pathCoords
+      };
+
+      drawProfile(lastRun, null);
+
+      if (!fail) {
+        statusEl.textContent = `✅ No penetrations. Sampled ~${sampled} points over ${rangeNm} NM.`;
+      } else {
+        statusEl.textContent = `⚠️ ${pens.length} penetration samples. Worst ~${worst.penFt.toFixed(1)} ft. Sampled ~${sampled} points.`;
+      }
+
+      runBtn.disabled = false;
+    }
+
+    function clearAll() {
+      stopAnimation();
+      lastRun = null;
+      statusEl.textContent = "";
+      profileBadge.textContent = "—";
+      drawProfile(null);
+
+      setFC(SRC_CENTER, { type:"FeatureCollection", features:[] });
+      setFC(SRC_FAN, { type:"FeatureCollection", features:[] });
+      setFC(SRC_PEN, { type:"FeatureCollection", features:[] });
+      setFC(SRC_WORST, { type:"FeatureCollection", features:[] });
+      setFC(SRC_ANIM, { type:"FeatureCollection", features:[] });
+      // keep LZ if you want; leaving it as-is is fine
+      if (map.getLayer(LYR_FAN)) map.setPaintProperty(LYR_FAN, "fill-color", "rgba(255,255,255,0.10)");
+    }
+
+    map.on("load", () => {
+      // Terrain DEM
+      map.addSource("mapbox-dem", {
+        type: "raster-dem",
+        url: "mapbox://mapbox.mapbox-terrain-dem-v1",
+        tileSize: 512
+      });
+      map.setTerrain({ source: "mapbox-dem", exaggeration: 1.5 });
+
+      // Terrain vectors (contours)
+      map.addSource("terrain-vectors", { type: "vector", url: "mapbox://mapbox.mapbox-terrain-v2" });
+
+      // Heat fill
+      map.addLayer({
+        id: "elevation-heatmap",
+        type: "fill",
+        source: "terrain-vectors",
+        "source-layer": "contour",
+        paint: {
+          "fill-color": buildDynamicFillColorTop10Red(0, 4500),
+          "fill-opacity": 0.7,
+          "fill-antialias": false
+        }
+      }, "settlement-label");
+
+      // Contour lines
+      map.addLayer({
+        id: "contour-lines",
+        type: "line",
+        source: "terrain-vectors",
+        "source-layer": "contour",
+        paint: {
+          "line-color": "rgba(0,0,0,0.4)",
+          "line-width": ["step", ["get","ele"], 1, 500, 1.5, 1000, 2]
+        }
+      });
+
+      ensureLayers();
+      applyHeatRangeFilter();
+      drawProfile(null);
+
+      minSlider.addEventListener("input", applyHeatRangeFilter);
+      maxSlider.addEventListener("input", applyHeatRangeFilter);
+
+      runBtn.addEventListener("click", runGsrCheck);
+      clearBtn.addEventListener("click", clearAll);
+
+      animBtn.addEventListener("click", () => {
+        if (anim.enabled) stopAnimation();
+        else startAnimation();
+      });
+
+      // Click to set LZ
+      map.on("click", (e) => {
+        lzLngLat = [e.lngLat.lng, e.lngLat.lat];
+        lzBadge.textContent = `LZ: ${lzLngLat[0].toFixed(5)}, ${lzLngLat[1].toFixed(5)}`;
+        setFC(SRC_LZ, { type:"FeatureCollection", features:[turf.point(lzLngLat)] });
+        clearAll();
+        statusEl.textContent = "LZ set. Click “Run GSR check”.";
+      });
+    });
+  </script>
+</body>
+</html>

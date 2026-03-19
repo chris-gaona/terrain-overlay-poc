@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Production-grade terrain elevation filter</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.20.0/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.20.0/mapbox-gl.js"></script>
+  <style>
+    :root {
+      --bg: rgba(18, 20, 24, 0.9);
+      --panel-border: rgba(255, 255, 255, 0.1);
+      --text: #fff;
+      --muted: rgba(255, 255, 255, 0.7);
+      --soft: rgba(255, 255, 255, 0.08);
+      --accent: #ff453a;
+      --accent-soft: rgba(255, 69, 58, 0.18);
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #0d1117;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+
+    #map {
+      position: absolute;
+      inset: 0;
+    }
+
+    .panel {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      z-index: 10;
+      width: 400px;
+      max-width: calc(100vw - 32px);
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--panel-border);
+      border-radius: 18px;
+      box-shadow: 0 18px 48px rgba(0,0,0,0.35);
+      backdrop-filter: blur(12px);
+      padding: 14px;
+    }
+
+    .title {
+      font-size: 17px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .sub {
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .stat {
+      padding: 10px 11px;
+      border-radius: 12px;
+      background: var(--soft);
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .stat-value {
+      font-size: 14px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .hist-wrap {
+      border-radius: 14px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      padding: 10px;
+      margin-bottom: 12px;
+    }
+
+    .hist-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .hist-title {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .hist-note {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .hist-shell {
+      position: relative;
+    }
+
+    #histogram {
+      width: 100%;
+      height: 124px;
+      display: block;
+      border-radius: 10px;
+      background: linear-gradient(to top, rgba(255,255,255,0.03), rgba(255,255,255,0.015));
+      cursor: crosshair;
+    }
+
+    .hist-axis {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 6px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .range-block {
+      margin-top: 10px;
+    }
+
+    .range-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      font-size: 13px;
+      margin-bottom: 6px;
+    }
+
+    .pill {
+      padding: 4px 9px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .dual-range {
+      position: relative;
+      height: 28px;
+    }
+
+    .dual-range input[type="range"] {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      margin: 0;
+      pointer-events: none;
+      background: transparent;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+
+    .dual-range input[type="range"]::-webkit-slider-thumb {
+      pointer-events: auto;
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #fff;
+      border: 2px solid var(--accent);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      cursor: grab;
+    }
+
+    .dual-range input[type="range"]::-moz-range-thumb {
+      pointer-events: auto;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #fff;
+      border: 2px solid var(--accent);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      cursor: grab;
+    }
+
+    .track {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 11px;
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.1);
+      overflow: hidden;
+    }
+
+    .track-fill {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      background: linear-gradient(to right, rgba(255,69,58,0.75), rgba(255,69,58,1));
+    }
+
+    .buttons {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 11px;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      color: white;
+      background: var(--accent);
+      cursor: pointer;
+    }
+
+    button.secondary {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .legend {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .swatch {
+      width: 18px;
+      height: 10px;
+      border-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.25);
+      flex: 0 0 auto;
+    }
+
+    .swatch.red {
+      background: rgba(255, 0, 0, 0.75);
+    }
+
+    .swatch.contour {
+      width: 18px;
+      height: 2px;
+      border: 0;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.9);
+    }
+
+    .status {
+      margin-top: 12px;
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--muted);
+      min-height: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel">
+    <div class="title">Terrain elevation filter</div>
+    <div class="sub">
+      Brush the histogram or drag the handles. The overlay previews quickly, then refines after interaction stops.
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-label">Visible min</div>
+        <div class="stat-value" id="visibleMin">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Visible max</div>
+        <div class="stat-value" id="visibleMax">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">In range</div>
+        <div class="stat-value" id="coverage">—</div>
+      </div>
+    </div>
+
+    <div class="hist-wrap">
+      <div class="hist-head">
+        <div class="hist-title">Visible elevation histogram</div>
+        <div class="hist-note" id="histNote">Loading…</div>
+      </div>
+      <div class="hist-shell">
+        <canvas id="histogram" width="372" height="124"></canvas>
+      </div>
+      <div class="hist-axis">
+        <span id="histMin">—</span>
+        <span id="histMid">—</span>
+        <span id="histMax">—</span>
+      </div>
+    </div>
+
+    <div class="range-block">
+      <div class="range-row">
+        <span>Elevation range</span>
+        <span class="pill" id="rangeLabel">500 m – 1500 m</span>
+      </div>
+      <div class="dual-range">
+        <div class="track"><div class="track-fill" id="trackFill"></div></div>
+        <input id="minRange" type="range" min="-500" max="5000" step="10" value="500" />
+        <input id="maxRange" type="range" min="-500" max="5000" step="10" value="1500" />
+      </div>
+    </div>
+
+    <div class="buttons">
+      <button id="fitVisible" class="secondary" type="button">Fit visible</button>
+      <button id="rainier" class="secondary" type="button">Rainier</button>
+      <button id="alps" class="secondary" type="button">Alps</button>
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+
+    <div class="legend">
+      <div class="legend-row"><span class="swatch red"></span><span>Selected elevation range</span></div>
+      <div class="legend-row"><span class="swatch contour"></span><span>Terrain contours</span></div>
+    </div>
+
+    <div class="status" id="status">Loading map…</div>
+  </div>
+
+  <script>
+    mapboxgl.accessToken = MAPBOX_ACCESS_TOKEN
+
+    const DEM_ZOOM = 12;
+    const PREVIEW_SIZE = 256;
+    const FINAL_SIZE = 768;
+    const HIST_SIZE = 256;
+    const HIST_BINS = 40;
+    const OVERLAY_ALPHA = 175;
+
+    const minRange = document.getElementById('minRange');
+    const maxRange = document.getElementById('maxRange');
+    const rangeLabel = document.getElementById('rangeLabel');
+    const trackFill = document.getElementById('trackFill');
+    const visibleMinEl = document.getElementById('visibleMin');
+    const visibleMaxEl = document.getElementById('visibleMax');
+    const coverageEl = document.getElementById('coverage');
+    const histMinEl = document.getElementById('histMin');
+    const histMidEl = document.getElementById('histMid');
+    const histMaxEl = document.getElementById('histMax');
+    const histNoteEl = document.getElementById('histNote');
+    const statusEl = document.getElementById('status');
+    const histogramCanvas = document.getElementById('histogram');
+    const histogramCtx = histogramCanvas.getContext('2d');
+
+    const overlayCanvas = document.createElement('canvas');
+    overlayCanvas.width = FINAL_SIZE;
+    overlayCanvas.height = FINAL_SIZE;
+    const overlayCtx = overlayCanvas.getContext('2d');
+
+    let map;
+    let overlayReady = false;
+    let idleTimer = null;
+    let currentJob = 0;
+    let visibleStats = null;
+
+    const workerCode = `
+      const tileCache = new Map();
+      let token = '';
+
+      function lngLatToWorldPixel(lng, lat, z) {
+        const scale = 256 * Math.pow(2, z);
+        const x = (lng + 180) / 360 * scale;
+        const sinLat = Math.sin(lat * Math.PI / 180);
+        const y = (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale;
+        return { x, y };
+      }
+
+      function worldPixelToTile(px, py) {
+        return {
+          tileX: Math.floor(px / 256),
+          tileY: Math.floor(py / 256),
+          pixelX: ((Math.floor(px) % 256) + 256) % 256,
+          pixelY: ((Math.floor(py) % 256) + 256) % 256
+        };
+      }
+
+      function normalizeLng(lng) {
+        let x = lng;
+        while (x < -180) x += 360;
+        while (x >= 180) x -= 360;
+        return x;
+      }
+
+      function elevationFromRgb(r, g, b) {
+        return -10000 + ((r * 256 * 256 + g * 256 + b) * 0.1);
+      }
+
+      async function loadTile(z, x, y) {
+        const dim = Math.pow(2, z);
+        const wrappedX = ((x % dim) + dim) % dim;
+        if (y < 0 || y >= dim) return null;
+
+        const key = z + '/' + wrappedX + '/' + y;
+        if (tileCache.has(key)) return tileCache.get(key);
+
+        const promise = (async () => {
+          const url = 'https://api.mapbox.com/v4/mapbox.terrain-rgb/' + z + '/' + wrappedX + '/' + y + '.pngraw?access_token=' + token;
+          const res = await fetch(url);
+          if (!res.ok) throw new Error('Tile fetch failed: ' + res.status);
+          const blob = await res.blob();
+          const bmp = await createImageBitmap(blob);
+          const canvas = new OffscreenCanvas(256, 256);
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          ctx.drawImage(bmp, 0, 0);
+          bmp.close();
+          return ctx.getImageData(0, 0, 256, 256);
+        })().catch(err => {
+          tileCache.delete(key);
+          return null;
+        });
+
+        tileCache.set(key, promise);
+        return promise;
+      }
+
+      async function getElevation(lng, lat, z) {
+        const wp = lngLatToWorldPixel(normalizeLng(lng), lat, z);
+        const { tileX, tileY, pixelX, pixelY } = worldPixelToTile(wp.x, wp.y);
+        const tile = await loadTile(z, tileX, tileY);
+        if (!tile) return null;
+        const idx = (pixelY * 256 + pixelX) * 4;
+        return elevationFromRgb(tile.data[idx], tile.data[idx + 1], tile.data[idx + 2]);
+      }
+
+      async function prefetch(bounds, z) {
+        const nw = lngLatToWorldPixel(normalizeLng(bounds.west), bounds.north, z);
+        const se = lngLatToWorldPixel(normalizeLng(bounds.east), bounds.south, z);
+        const minX = Math.floor(Math.min(nw.x, se.x) / 256);
+        const maxX = Math.floor(Math.max(nw.x, se.x) / 256);
+        const minY = Math.floor(Math.min(nw.y, se.y) / 256);
+        const maxY = Math.floor(Math.max(nw.y, se.y) / 256);
+
+        const jobs = [];
+        for (let y = minY; y <= maxY; y++) {
+          for (let x = minX; x <= maxX; x++) {
+            jobs.push(loadTile(z, x, y));
+          }
+        }
+        await Promise.all(jobs);
+      }
+
+      function lerp(a, b, t) {
+        return a + (b - a) * t;
+      }
+
+      async function histogram(bounds, z, size, bins) {
+        const values = [];
+        let min = Infinity;
+        let max = -Infinity;
+
+        for (let y = 0; y < size; y += 4) {
+          const lat = lerp(bounds.north, bounds.south, (y + 0.5) / size);
+          for (let x = 0; x < size; x += 4) {
+            const lng = lerp(bounds.west, bounds.east, (x + 0.5) / size);
+            const e = await getElevation(lng, lat, z);
+            if (e == null) continue;
+            values.push(e);
+            if (e < min) min = e;
+            if (e > max) max = e;
+          }
+        }
+
+        if (!isFinite(min) || !isFinite(max)) {
+          return { min: 0, max: 0, bins: new Array(bins).fill(0), samples: 0 };
+        }
+
+        const hist = new Array(bins).fill(0);
+        const range = Math.max(1, max - min);
+        for (const v of values) {
+          const idx = Math.min(bins - 1, Math.floor(((v - min) / range) * bins));
+          hist[idx]++;
+        }
+        return { min, max, bins: hist, samples: values.length };
+      }
+
+      async function render(bounds, z, size, minElev, maxElev, alpha) {
+        const arr = new Uint8ClampedArray(size * size * 4);
+        let inRange = 0;
+        let sampled = 0;
+
+        for (let y = 0; y < size; y++) {
+          const lat = lerp(bounds.north, bounds.south, (y + 0.5) / size);
+          for (let x = 0; x < size; x++) {
+            const lng = lerp(bounds.west, bounds.east, (x + 0.5) / size);
+            const e = await getElevation(lng, lat, z);
+            if (e == null) continue;
+            sampled++;
+            if (e >= minElev && e <= maxElev) {
+              const idx = (y * size + x) * 4;
+              arr[idx] = 255;
+              arr[idx + 1] = 0;
+              arr[idx + 2] = 0;
+              arr[idx + 3] = alpha;
+              inRange++;
+            }
+          }
+        }
+        return { pixels: arr, size, sampled, inRange };
+      }
+
+      self.onmessage = async (e) => {
+        const msg = e.data;
+        if (msg.type === 'token') {
+          token = msg.token;
+          return;
+        }
+
+        if (msg.type === 'job') {
+          const { id, bounds, z, previewSize, finalSize, minElev, maxElev, alpha, bins } = msg;
+
+          await prefetch(bounds, z);
+
+          const hist = await histogram(bounds, z, previewSize, bins);
+          self.postMessage({ type: 'histogram', id, histogram: hist });
+
+          const preview = await render(bounds, z, previewSize, minElev, maxElev, alpha);
+          self.postMessage({ type: 'preview', id, result: preview });
+
+          const final = await render(bounds, z, finalSize, minElev, maxElev, alpha);
+          self.postMessage({ type: 'final', id, result: final });
+        }
+      };
+    `;
+
+    const worker = new Worker(URL.createObjectURL(new Blob([workerCode], { type: 'application/javascript' })));
+    worker.postMessage({ type: 'token', token: mapboxgl.accessToken });
+
+    function fmtMeters(v) {
+      return `${Math.round(v).toLocaleString()} m`;
+    }
+
+    function clamp(v, min, max) {
+      return Math.max(min, Math.min(max, v));
+    }
+
+    function updateRangeState() {
+      let min = Number(minRange.value);
+      let max = Number(maxRange.value);
+
+      if (min > max) {
+        if (document.activeElement === minRange) {
+          max = min;
+          maxRange.value = String(max);
+        } else {
+          min = max;
+          minRange.value = String(min);
+        }
+      }
+
+      rangeLabel.textContent = `${fmtMeters(min)} – ${fmtMeters(max)}`;
+
+      const inputMin = Number(minRange.min);
+      const inputMax = Number(minRange.max);
+      const t1 = ((min - inputMin) / (inputMax - inputMin)) * 100;
+      const t2 = ((max - inputMin) / (inputMax - inputMin)) * 100;
+      trackFill.style.left = `${t1}%`;
+      trackFill.style.width = `${Math.max(0, t2 - t1)}%`;
+    }
+
+    function currentBounds() {
+      const b = map.getBounds();
+      let west = b.getWest();
+      let east = b.getEast();
+      if (east < west) east += 360;
+      return {
+        west,
+        east,
+        north: b.getNorth(),
+        south: b.getSouth()
+      };
+    }
+
+    function overlayCoordinates() {
+      const b = map.getBounds();
+      return [
+        [b.getNorthWest().lng, b.getNorthWest().lat],
+        [b.getNorthEast().lng, b.getNorthEast().lat],
+        [b.getSouthEast().lng, b.getSouthEast().lat],
+        [b.getSouthWest().lng, b.getSouthWest().lat]
+      ];
+    }
+
+    function paintOverlay(pixelData, size) {
+      overlayCanvas.width = size;
+      overlayCanvas.height = size;
+      const image = new ImageData(pixelData, size, size);
+      overlayCtx.putImageData(image, 0, 0);
+
+      const coords = overlayCoordinates();
+
+      if (!overlayReady) {
+        map.addSource('elevation-overlay', {
+          type: 'canvas',
+          canvas: overlayCanvas,
+          coordinates: coords,
+          animate: false
+        });
+
+        map.addLayer({
+          id: 'elevation-overlay-layer',
+          type: 'raster',
+          source: 'elevation-overlay',
+          paint: {
+            'raster-opacity': 0.92,
+            'raster-resampling': 'nearest',
+            'raster-fade-duration': 0
+          }
+        }, 'contours-minor');
+
+        overlayReady = true;
+      } else {
+        map.getSource('elevation-overlay').setCoordinates(coords);
+        map.triggerRepaint();
+      }
+    }
+
+    function drawHistogram(hist) {
+      visibleStats = hist;
+      visibleMinEl.textContent = fmtMeters(hist.min);
+      visibleMaxEl.textContent = fmtMeters(hist.max);
+      histMinEl.textContent = fmtMeters(hist.min);
+      histMidEl.textContent = fmtMeters((hist.min + hist.max) / 2);
+      histMaxEl.textContent = fmtMeters(hist.max);
+      histNoteEl.textContent = `${hist.samples.toLocaleString()} samples`;
+
+      const ctx = histogramCtx;
+      const w = histogramCanvas.width;
+      const h = histogramCanvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const bins = hist.bins;
+      const maxCount = Math.max(1, ...bins);
+      const padX = 6;
+      const padTop = 6;
+      const padBottom = 12;
+      const innerW = w - padX * 2;
+      const innerH = h - padTop - padBottom;
+      const barW = innerW / bins.length;
+
+      const minSel = Number(minRange.value);
+      const maxSel = Number(maxRange.value);
+      const range = Math.max(1, hist.max - hist.min);
+      const s1 = clamp((minSel - hist.min) / range, 0, 1);
+      const s2 = clamp((maxSel - hist.min) / range, 0, 1);
+
+      ctx.fillStyle = 'rgba(255,69,58,0.12)';
+      ctx.fillRect(padX + innerW * s1, padTop, innerW * (s2 - s1), innerH);
+
+      for (let i = 0; i < bins.length; i++) {
+        const x = padX + i * barW;
+        const height = innerH * (bins[i] / maxCount);
+        const y = padTop + innerH - height;
+        const binStart = hist.min + (i / bins.length) * range;
+        const binEnd = hist.min + ((i + 1) / bins.length) * range;
+        const hit = !(binEnd < minSel || binStart > maxSel);
+
+        ctx.fillStyle = hit ? 'rgba(255,69,58,0.95)' : 'rgba(255,255,255,0.42)';
+        ctx.fillRect(x + 0.5, y, Math.max(1, barW - 1), height);
+      }
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+      ctx.beginPath();
+      ctx.moveTo(padX, padTop + innerH + 0.5);
+      ctx.lineTo(padX + innerW, padTop + innerH + 0.5);
+      ctx.stroke();
+
+      ctx.strokeStyle = 'rgba(255,130,120,0.95)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(padX + innerW * s1, padTop);
+      ctx.lineTo(padX + innerW * s1, padTop + innerH);
+      ctx.moveTo(padX + innerW * s2, padTop);
+      ctx.lineTo(padX + innerW * s2, padTop + innerH);
+      ctx.stroke();
+    }
+
+    function kickJob(mode) {
+      if (!map || !map.getTerrain()) return;
+
+      const id = ++currentJob;
+      const minElev = Number(minRange.value);
+      const maxElev = Number(maxRange.value);
+      const bounds = currentBounds();
+
+      if (mode === 'preview') {
+        statusEl.textContent = 'Previewing…';
+      } else {
+        statusEl.textContent = 'Refining…';
+      }
+
+      worker.postMessage({
+        type: 'job',
+        id,
+        bounds,
+        z: DEM_ZOOM,
+        previewSize: PREVIEW_SIZE,
+        finalSize: mode === 'preview' ? PREVIEW_SIZE : FINAL_SIZE,
+        minElev,
+        maxElev,
+        alpha: OVERLAY_ALPHA,
+        bins: HIST_BINS
+      });
+    }
+
+    function schedulePreview() {
+      clearTimeout(idleTimer);
+      kickJob('preview');
+      idleTimer = setTimeout(() => kickJob('final'), 250);
+    }
+
+    function scheduleFinal() {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => kickJob('final'), 60);
+    }
+
+    function fitVisible() {
+      if (!visibleStats) return;
+      minRange.value = String(Math.round(visibleStats.min / 10) * 10);
+      maxRange.value = String(Math.round(visibleStats.max / 10) * 10);
+      updateRangeState();
+      drawHistogram(visibleStats);
+      scheduleFinal();
+    }
+
+    function addContours() {
+      map.addSource('terrain-v2', {
+        type: 'vector',
+        url: 'mapbox://mapbox.mapbox-terrain-v2'
+      });
+
+      map.addLayer({
+        id: 'contours-minor',
+        type: 'line',
+        source: 'terrain-v2',
+        'source-layer': 'contour',
+        minzoom: 9,
+        paint: {
+          'line-color': [
+            'case',
+            ['==', ['get', 'index'], 10], 'rgba(255,255,255,0.92)',
+            ['==', ['get', 'index'], 5], 'rgba(255,255,255,0.62)',
+            'rgba(255,255,255,0.26)'
+          ],
+          'line-width': [
+            'interpolate', ['linear'], ['zoom'],
+            9, ['case', ['>=', ['get', 'index'], 5], 0.7, 0.35],
+            14, ['case', ['>=', ['get', 'index'], 5], 1.6, 0.8]
+          ],
+          'line-opacity': [
+            'interpolate', ['linear'], ['zoom'],
+            9, 0.55,
+            14, 0.95
+          ]
+        }
+      });
+
+      map.addLayer({
+        id: 'contours-labels',
+        type: 'symbol',
+        source: 'terrain-v2',
+        'source-layer': 'contour',
+        minzoom: 11,
+        filter: ['>=', ['get', 'index'], 5],
+        layout: {
+          'symbol-placement': 'line',
+          'text-field': ['concat', ['to-string', ['get', 'ele']], ' m'],
+          'text-size': 10,
+          'symbol-spacing': 300,
+          'text-font': ['Open Sans Regular']
+        },
+        paint: {
+          'text-color': 'rgba(255,255,255,0.85)',
+          'text-halo-color': 'rgba(0,0,0,0.72)',
+          'text-halo-width': 1
+        }
+      });
+    }
+
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.id !== currentJob) return;
+
+      if (msg.type === 'histogram') {
+        drawHistogram(msg.histogram);
+      }
+
+      if (msg.type === 'preview' || msg.type === 'final') {
+        paintOverlay(msg.result.pixels, msg.result.size);
+        const pct = msg.result.sampled ? Math.round((msg.result.inRange / msg.result.sampled) * 100) : 0;
+        coverageEl.textContent = `${pct}%`;
+        statusEl.textContent = msg.type === 'preview'
+          ? 'Preview ready'
+          : `Refined overlay ready`;
+      }
+    };
+
+    function applyPreset(center, zoom, pitch, bearing, min, max) {
+      minRange.value = String(min);
+      maxRange.value = String(max);
+      updateRangeState();
+      map.easeTo({ center, zoom, pitch, bearing, duration: 900 });
+      setTimeout(scheduleFinal, 950);
+    }
+
+    function bindHistogramBrush() {
+      let dragging = false;
+      let anchorT = 0;
+
+      function eventToT(evt) {
+        const rect = histogramCanvas.getBoundingClientRect();
+        const x = clamp(evt.clientX - rect.left, 0, rect.width);
+        return x / rect.width;
+      }
+
+      function tToElevation(t) {
+        if (!visibleStats) return 0;
+        return visibleStats.min + (visibleStats.max - visibleStats.min) * t;
+      }
+
+      histogramCanvas.addEventListener('pointerdown', (evt) => {
+        if (!visibleStats) return;
+        dragging = true;
+        anchorT = eventToT(evt);
+        histogramCanvas.setPointerCapture(evt.pointerId);
+      });
+
+      histogramCanvas.addEventListener('pointermove', (evt) => {
+        if (!dragging || !visibleStats) return;
+        const t = eventToT(evt);
+        const a = Math.min(anchorT, t);
+        const b = Math.max(anchorT, t);
+        minRange.value = String(Math.round(tToElevation(a) / 10) * 10);
+        maxRange.value = String(Math.round(tToElevation(b) / 10) * 10);
+        updateRangeState();
+        drawHistogram(visibleStats);
+        schedulePreview();
+      });
+
+      histogramCanvas.addEventListener('pointerup', () => {
+        dragging = false;
+      });
+    }
+
+    updateRangeState();
+
+    map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/mapbox/standard-satellite',
+      center: [-121.7603, 46.8523],
+      zoom: 10.4,
+      pitch: 70,
+      bearing: 25,
+      antialias: true
+    });
+
+    map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+
+    map.on('style.load', () => {
+      map.addSource('mapbox-dem', {
+        type: 'raster-dem',
+        url: 'mapbox://mapbox.mapbox-terrain-dem-v1',
+        tileSize: 512,
+        maxzoom: 14
+      });
+
+      map.setTerrain({
+        source: 'mapbox-dem',
+        exaggeration: 1.2
+      });
+
+      map.setFog({
+        'color': 'rgb(255,255,255)',
+        'high-color': 'rgb(36,92,223)',
+        'horizon-blend': 0.08
+      });
+
+      addContours();
+      bindHistogramBrush();
+      scheduleFinal();
+    });
+
+    minRange.addEventListener('input', () => {
+      updateRangeState();
+      if (visibleStats) drawHistogram(visibleStats);
+      schedulePreview();
+    });
+
+    maxRange.addEventListener('input', () => {
+      updateRangeState();
+      if (visibleStats) drawHistogram(visibleStats);
+      schedulePreview();
+    });
+
+    map.on('movestart', () => {
+      clearTimeout(idleTimer);
+      statusEl.textContent = 'Moving…';
+    });
+
+    map.on('moveend', scheduleFinal);
+    map.on('zoomend', scheduleFinal);
+    map.on('rotateend', scheduleFinal);
+    map.on('pitchend', scheduleFinal);
+
+    document.getElementById('refresh').addEventListener('click', scheduleFinal);
+    document.getElementById('fitVisible').addEventListener('click', fitVisible);
+
+    document.getElementById('rainier').addEventListener('click', () => {
+      applyPreset([-121.7603, 46.8523], 10.4, 70, 25, 1500, 2600);
+    });
+
+    document.getElementById('alps').addEventListener('click', () => {
+      applyPreset([10.9, 46.55], 9.8, 68, 18, 1800, 3200);
+    });
+  </script>
+</body>
+</html>

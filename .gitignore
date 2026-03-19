@@ -1,0 +1,5 @@
+node_modules
+.env
+# Mapbox token (local only)
+token.js
+dist/

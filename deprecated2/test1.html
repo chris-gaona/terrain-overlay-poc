@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Mapbox terrain elevation mask with min/max sliders</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+
+  <!-- Mapbox GL JS -->
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.20.0/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.20.0/mapbox-gl.js"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+
+    #map {
+      position: absolute;
+      inset: 0;
+    }
+
+    .panel {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 2;
+      width: 320px;
+      max-width: calc(100vw - 24px);
+      background: rgba(20, 20, 20, 0.9);
+      color: #fff;
+      padding: 14px 14px 12px;
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+      backdrop-filter: blur(8px);
+    }
+
+    .panel h1 {
+      margin: 0 0 10px;
+      font-size: 16px;
+      line-height: 1.2;
+    }
+
+    .row {
+      margin-top: 10px;
+    }
+
+    .row label {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 13px;
+      margin-bottom: 4px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+    }
+
+    .meta {
+      margin-top: 10px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: #cfcfcf;
+    }
+
+    .legend {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      font-size: 12px;
+    }
+
+    .legend-swatch {
+      width: 22px;
+      height: 12px;
+      background: rgba(255, 0, 0, 0.7);
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel">
+    <h1>3D Terrain Elevation Mask</h1>
+
+    <div class="row">
+      <label for="minElev">
+        <span>Min elevation</span>
+        <strong id="minElevValue">500 m</strong>
+      </label>
+      <input id="minElev" type="range" min="-500" max="5000" step="10" value="500" />
+    </div>
+
+    <div class="row">
+      <label for="maxElev">
+        <span>Max elevation</span>
+        <strong id="maxElevValue">1500 m</strong>
+      </label>
+      <input id="maxElev" type="range" min="-500" max="5000" step="10" value="1500" />
+    </div>
+
+    <div class="legend">
+      <span class="legend-swatch"></span>
+      <span>Terrain shaded red when elevation is within range</span>
+    </div>
+
+    <div class="meta" id="status">
+      Loading terrain…
+    </div>
+  </div>
+
+  <script>
+    mapboxgl.accessToken = MAPBOX_ACCESS_TOKEN;
+
+    const minElevInput = document.getElementById('minElev');
+    const maxElevInput = document.getElementById('maxElev');
+    const minElevValue = document.getElementById('minElevValue');
+    const maxElevValue = document.getElementById('maxElevValue');
+    const statusEl = document.getElementById('status');
+
+    // Offscreen render canvas used as the image source for the overlay.
+    const renderCanvas = document.createElement('canvas');
+    const RENDER_SIZE = 384; // fixed grid helps visual consistency when zooming
+    renderCanvas.width = RENDER_SIZE;
+    renderCanvas.height = RENDER_SIZE;
+    const ctx = renderCanvas.getContext('2d', { willReadFrequently: true });
+
+    let map;
+    let isRendering = false;
+    let renderQueued = false;
+    let sourceInitialized = false;
+
+    function updateLabels() {
+      let minV = Number(minElevInput.value);
+      let maxV = Number(maxElevInput.value);
+
+      if (minV > maxV) {
+        // Keep the range valid without creating a broken state.
+        if (document.activeElement === minElevInput) {
+          maxV = minV;
+          maxElevInput.value = String(maxV);
+        } else {
+          minV = maxV;
+          minElevInput.value = String(minV);
+        }
+      }
+
+      minElevValue.textContent = `${minV} m`;
+      maxElevValue.textContent = `${maxV} m`;
+    }
+
+    function lerp(a, b, t) {
+      return a + (b - a) * t;
+    }
+
+    function getOverlayCoordinates(bounds) {
+      const nw = bounds.getNorthWest();
+      const ne = bounds.getNorthEast();
+      const se = bounds.getSouthEast();
+      const sw = bounds.getSouthWest();
+      return [
+        [nw.lng, nw.lat],
+        [ne.lng, ne.lat],
+        [se.lng, se.lat],
+        [sw.lng, sw.lat]
+      ];
+    }
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function requestRender() {
+      if (!map || !map.isStyleLoaded()) return;
+      if (isRendering) {
+        renderQueued = true;
+        return;
+      }
+
+      renderQueued = false;
+      isRendering = true;
+
+      // Let interaction settle a bit before rendering.
+      requestAnimationFrame(async () => {
+        try {
+          await drawElevationMask();
+        } catch (err) {
+          console.error(err);
+          setStatus(`Render error: ${err.message}`);
+        } finally {
+          isRendering = false;
+          if (renderQueued) requestRender();
+        }
+      });
+    }
+
+    async function drawElevationMask() {
+      if (!map.getTerrain()) {
+        setStatus('Terrain is not ready yet.');
+        return;
+      }
+
+      const bounds = map.getBounds();
+      const coords = getOverlayCoordinates(bounds);
+      const width = renderCanvas.width;
+      const height = renderCanvas.height;
+      const minElev = Number(minElevInput.value);
+      const maxElev = Number(maxElevInput.value);
+
+      setStatus('Rendering elevation mask…');
+
+      // Clear previous frame.
+      ctx.clearRect(0, 0, width, height);
+      const image = ctx.createImageData(width, height);
+      const data = image.data;
+
+      const west = bounds.getWest();
+      const east = bounds.getEast();
+      const north = bounds.getNorth();
+      const south = bounds.getSouth();
+
+      let painted = 0;
+
+      // Sample the terrain at cell centers over the visible geographic bounds.
+      // This is not a classic "heatmap" intensity kernel; it is a stable threshold mask.
+      for (let y = 0; y < height; y++) {
+        const v = (y + 0.5) / height;
+        const lat = lerp(north, south, v);
+
+        for (let x = 0; x < width; x++) {
+          const u = (x + 0.5) / width;
+          const lng = lerp(west, east, u);
+
+          const elevation = map.queryTerrainElevation([lng, lat], { exaggerated: false });
+
+          const i = (y * width + x) * 4;
+
+          if (elevation != null && elevation >= minElev && elevation <= maxElev) {
+            data[i + 0] = 255; // red
+            data[i + 1] = 0;
+            data[i + 2] = 0;
+            data[i + 3] = 160; // alpha
+            painted++;
+          } else {
+            data[i + 0] = 0;
+            data[i + 1] = 0;
+            data[i + 2] = 0;
+            data[i + 3] = 0;
+          }
+        }
+
+        // Yield occasionally so the browser remains responsive on slower machines.
+        if (y % 32 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+      }
+
+      ctx.putImageData(image, 0, 0);
+
+      if (!sourceInitialized) {
+        map.addSource('elevation-mask', {
+          type: 'canvas',
+          canvas: renderCanvas,
+          coordinates: coords,
+          animate: false
+        });
+
+        map.addLayer({
+          id: 'elevation-mask-layer',
+          type: 'raster',
+          source: 'elevation-mask',
+          paint: {
+            'raster-opacity': 0.85,
+            'raster-resampling': 'nearest',
+            'raster-fade-duration': 0
+          }
+        });
+
+        sourceInitialized = true;
+      } else {
+        const src = map.getSource('elevation-mask');
+        src.setCoordinates(coords);
+        map.triggerRepaint();
+      }
+
+      setStatus(`Rendered. ${painted.toLocaleString()} cells are inside the selected elevation range.`);
+    }
+
+    updateLabels();
+
+    map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/mapbox/standard-satellite',
+      center: [-121.7603, 46.8523], // Mount Rainier area
+      zoom: 9.5,
+      pitch: 72,
+      bearing: 25,
+      antialias: true
+    });
+
+    map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+
+    map.on('style.load', () => {
+      map.addSource('mapbox-dem', {
+        type: 'raster-dem',
+        url: 'mapbox://mapbox.mapbox-terrain-dem-v1',
+        tileSize: 512,
+        maxzoom: 14
+      });
+
+      map.setTerrain({
+        source: 'mapbox-dem',
+        exaggeration: 1.2
+      });
+
+      // Optional fog for depth.
+      map.setFog({
+        'color': 'rgb(255,255,255)',
+        'high-color': 'rgb(36, 92, 223)',
+        'horizon-blend': 0.08
+      });
+
+      // Wait until the terrain tiles start loading, then render.
+      setTimeout(requestRender, 300);
+    });
+
+    map.on('idle', () => {
+      if (!sourceInitialized) requestRender();
+    });
+
+    map.on('moveend', requestRender);
+    map.on('zoomend', requestRender);
+    map.on('rotateend', requestRender);
+    map.on('pitchend', requestRender);
+
+    minElevInput.addEventListener('input', () => {
+      updateLabels();
+      requestRender();
+    });
+
+    maxElevInput.addEventListener('input', () => {
+      updateLabels();
+      requestRender();
+    });
+  </script>
+</body>
+</html>

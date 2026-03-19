@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Mapbox Terrain-RGB Elevation Overlay + Histogram + Contours</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.20.0/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.20.0/mapbox-gl.js"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #0f1115;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    #map {
+      position: absolute;
+      inset: 0;
+    }
+
+    .panel {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      z-index: 10;
+      width: 380px;
+      max-width: calc(100vw - 32px);
+      background: rgba(17, 18, 22, 0.92);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 18px;
+      box-shadow: 0 16px 42px rgba(0,0,0,0.35);
+      backdrop-filter: blur(12px);
+      padding: 14px;
+    }
+
+    .title {
+      font-size: 17px;
+      font-weight: 700;
+      margin: 0 0 6px 0;
+    }
+
+    .sub {
+      font-size: 12px;
+      line-height: 1.45;
+      color: rgba(255,255,255,0.72);
+      margin-bottom: 12px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .stat {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 12px;
+      padding: 10px 11px;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: rgba(255,255,255,0.64);
+      margin-bottom: 4px;
+    }
+
+    .stat-value {
+      font-size: 15px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .histogram-wrap {
+      margin: 8px 0 12px 0;
+      padding: 10px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 14px;
+    }
+
+    .histogram-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      gap: 10px;
+    }
+
+    .histogram-title {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .histogram-note {
+      font-size: 11px;
+      color: rgba(255,255,255,0.60);
+      white-space: nowrap;
+    }
+
+    #histogram {
+      width: 100%;
+      height: 120px;
+      display: block;
+      border-radius: 10px;
+      background:
+        linear-gradient(to top, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+    }
+
+    .histogram-axis {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: rgba(255,255,255,0.64);
+      margin-top: 6px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .control {
+      margin-top: 12px;
+    }
+
+    .label-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+      gap: 12px;
+      font-size: 13px;
+    }
+
+    .pill {
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.10);
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #ff3b30;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      appearance: none;
+      border: none;
+      border-radius: 11px;
+      padding: 10px 12px;
+      font-weight: 700;
+      cursor: pointer;
+      font-size: 13px;
+      color: white;
+      background: #ff3b30;
+    }
+
+    button.secondary {
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.10);
+      color: white;
+    }
+
+    .legend {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12px;
+      color: rgba(255,255,255,0.78);
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .swatch {
+      width: 18px;
+      height: 10px;
+      border-radius: 3px;
+      border: 1px solid rgba(255,255,255,0.25);
+      flex: 0 0 auto;
+    }
+
+    .swatch.red {
+      background: rgba(255, 0, 0, 0.70);
+    }
+
+    .swatch.contour {
+      background: linear-gradient(to right, rgba(255,255,255,0.2), rgba(255,255,255,0.85));
+      height: 2px;
+      border: none;
+      border-radius: 999px;
+    }
+
+    .status {
+      margin-top: 12px;
+      font-size: 12px;
+      line-height: 1.45;
+      color: rgba(255,255,255,0.68);
+      min-height: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel">
+    <div class="title">Terrain elevation filter</div>
+    <div class="sub">
+      Histogram shows the visible area’s elevation distribution. The red overlay highlights terrain whose decoded elevation falls within the selected range.
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-label">Visible min</div>
+        <div class="stat-value" id="visibleMin">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Visible max</div>
+        <div class="stat-value" id="visibleMax">—</div>
+      </div>
+    </div>
+
+    <div class="histogram-wrap">
+      <div class="histogram-head">
+        <div class="histogram-title">Visible elevation histogram</div>
+        <div class="histogram-note" id="histogramNote">Sampling…</div>
+      </div>
+      <canvas id="histogram" width="356" height="120"></canvas>
+      <div class="histogram-axis">
+        <span id="histMin">—</span>
+        <span id="histMid">—</span>
+        <span id="histMax">—</span>
+      </div>
+    </div>
+
+    <div class="control">
+      <div class="label-row">
+        <span>Minimum elevation</span>
+        <span class="pill" id="minLabel">500 m</span>
+      </div>
+      <input id="minElev" type="range" min="-500" max="5000" step="10" value="500" />
+    </div>
+
+    <div class="control">
+      <div class="label-row">
+        <span>Maximum elevation</span>
+        <span class="pill" id="maxLabel">1500 m</span>
+      </div>
+      <input id="maxElev" type="range" min="-500" max="5000" step="10" value="1500" />
+    </div>
+
+    <div class="row">
+      <button id="fitVisible" class="secondary" type="button">Fit to visible range</button>
+      <button id="rainier" class="secondary" type="button">Preset: Rainier</button>
+      <button id="alps" class="secondary" type="button">Preset: Alps</button>
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+
+    <div class="legend">
+      <div class="legend-row">
+        <span class="swatch red"></span>
+        <span>Elevation range overlay</span>
+      </div>
+      <div class="legend-row">
+        <span class="swatch contour"></span>
+        <span>Terrain contours</span>
+      </div>
+    </div>
+
+    <div class="status" id="status">Loading map…</div>
+  </div>
+
+  <script>
+    mapboxgl.accessToken = MAPBOX_ACCESS_TOKEN
+
+    const FIXED_DEM_ZOOM = 12;
+    const OVERLAY_SIZE = 512;
+    const HIST_BINS = 32;
+    const HIST_SAMPLE_STEP = 4;
+    const OVERLAY_ALPHA = 170;
+
+    const minElevInput = document.getElementById('minElev');
+    const maxElevInput = document.getElementById('maxElev');
+    const minLabel = document.getElementById('minLabel');
+    const maxLabel = document.getElementById('maxLabel');
+    const visibleMinEl = document.getElementById('visibleMin');
+    const visibleMaxEl = document.getElementById('visibleMax');
+    const histMinEl = document.getElementById('histMin');
+    const histMidEl = document.getElementById('histMid');
+    const histMaxEl = document.getElementById('histMax');
+    const histogramNoteEl = document.getElementById('histogramNote');
+    const statusEl = document.getElementById('status');
+    const histogramCanvas = document.getElementById('histogram');
+    const histogramCtx = histogramCanvas.getContext('2d');
+
+    const overlayCanvas = document.createElement('canvas');
+    overlayCanvas.width = OVERLAY_SIZE;
+    overlayCanvas.height = OVERLAY_SIZE;
+    const overlayCtx = overlayCanvas.getContext('2d', { willReadFrequently: true });
+
+    const tileCanvas = document.createElement('canvas');
+    tileCanvas.width = 256;
+    tileCanvas.height = 256;
+    const tileCtx = tileCanvas.getContext('2d', { willReadFrequently: true });
+
+    const tileCache = new Map();
+
+    let map;
+    let sourceReady = false;
+    let renderToken = 0;
+    let debounceTimer = null;
+
+    let lastVisibleStats = {
+      min: null,
+      max: null,
+      histogram: new Array(HIST_BINS).fill(0),
+      samples: 0
+    };
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function clamp(v, min, max) {
+      return Math.max(min, Math.min(max, v));
+    }
+
+    function lerp(a, b, t) {
+      return a + (b - a) * t;
+    }
+
+    function fmtMeters(v) {
+      return `${Math.round(v).toLocaleString()} m`;
+    }
+
+    function updateLabels() {
+      let minV = Number(minElevInput.value);
+      let maxV = Number(maxElevInput.value);
+
+      if (minV > maxV) {
+        if (document.activeElement === minElevInput) {
+          maxV = minV;
+          maxElevInput.value = String(maxV);
+        } else {
+          minV = maxV;
+          minElevInput.value = String(minV);
+        }
+      }
+
+      minLabel.textContent = fmtMeters(minV);
+      maxLabel.textContent = fmtMeters(maxV);
+    }
+
+    function lngLatToWorldPixel(lng, lat, z) {
+      const scale = 256 * Math.pow(2, z);
+      const x = (lng + 180) / 360 * scale;
+      const sinLat = Math.sin(lat * Math.PI / 180);
+      const y = (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale;
+      return { x, y };
+    }
+
+    function worldPixelToTile(px, py) {
+      return {
+        tileX: Math.floor(px / 256),
+        tileY: Math.floor(py / 256),
+        pixelX: ((Math.floor(px) % 256) + 256) % 256,
+        pixelY: ((Math.floor(py) % 256) + 256) % 256
+      };
+    }
+
+    function elevationFromRgb(r, g, b) {
+      return -10000 + ((r * 256 * 256 + g * 256 + b) * 0.1);
+    }
+
+    function normalizeLng(lng) {
+      let x = lng;
+      while (x < -180) x += 360;
+      while (x >= 180) x -= 360;
+      return x;
+    }
+
+    function getVisibleBounds() {
+      const b = map.getBounds();
+      let west = b.getWest();
+      let east = b.getEast();
+      if (east < west) east += 360;
+      return {
+        west,
+        east,
+        north: b.getNorth(),
+        south: b.getSouth()
+      };
+    }
+
+    function getOverlayCoordinates() {
+      const b = map.getBounds();
+      return [
+        [b.getNorthWest().lng, b.getNorthWest().lat],
+        [b.getNorthEast().lng, b.getNorthEast().lat],
+        [b.getSouthEast().lng, b.getSouthEast().lat],
+        [b.getSouthWest().lng, b.getSouthWest().lat]
+      ];
+    }
+
+    async function loadTerrainTile(z, x, y) {
+      const dim = Math.pow(2, z);
+      const wrappedX = ((x % dim) + dim) % dim;
+      if (y < 0 || y >= dim) return null;
+
+      const key = `${z}/${wrappedX}/${y}`;
+      if (tileCache.has(key)) return tileCache.get(key);
+
+      const url = `https://api.mapbox.com/v4/mapbox.terrain-rgb/${z}/${wrappedX}/${y}.pngraw?access_token=${mapboxgl.accessToken}`;
+
+      const promise = fetch(url)
+        .then(async (res) => {
+          if (!res.ok) throw new Error(`Tile fetch failed: ${res.status}`);
+          const blob = await res.blob();
+          const bitmap = await createImageBitmap(blob);
+          tileCtx.clearRect(0, 0, 256, 256);
+          tileCtx.drawImage(bitmap, 0, 0);
+          const imageData = tileCtx.getImageData(0, 0, 256, 256);
+          bitmap.close();
+          return imageData;
+        })
+        .catch((err) => {
+          console.error('Terrain tile load error:', key, err);
+          tileCache.delete(key);
+          return null;
+        });
+
+      tileCache.set(key, promise);
+      return promise;
+    }
+
+    async function prefetchVisibleTiles(bounds, z) {
+      const nw = lngLatToWorldPixel(normalizeLng(bounds.west), bounds.north, z);
+      const se = lngLatToWorldPixel(normalizeLng(bounds.east), bounds.south, z);
+
+      let minX = Math.floor(Math.min(nw.x, se.x) / 256);
+      let maxX = Math.floor(Math.max(nw.x, se.x) / 256);
+      let minY = Math.floor(Math.min(nw.y, se.y) / 256);
+      let maxY = Math.floor(Math.max(nw.y, se.y) / 256);
+
+      const tasks = [];
+      for (let ty = minY; ty <= maxY; ty++) {
+        for (let tx = minX; tx <= maxX; tx++) {
+          tasks.push(loadTerrainTile(z, tx, ty));
+        }
+      }
+      await Promise.all(tasks);
+    }
+
+    async function getElevationAtLngLat(lng, lat, z) {
+      const wp = lngLatToWorldPixel(normalizeLng(lng), lat, z);
+      const { tileX, tileY, pixelX, pixelY } = worldPixelToTile(wp.x, wp.y);
+      const tile = await loadTerrainTile(z, tileX, tileY);
+      if (!tile) return null;
+
+      const idx = (pixelY * 256 + pixelX) * 4;
+      return elevationFromRgb(
+        tile.data[idx],
+        tile.data[idx + 1],
+        tile.data[idx + 2]
+      );
+    }
+
+    function drawHistogram(stats) {
+      const ctx = histogramCtx;
+      const w = histogramCanvas.width;
+      const h = histogramCanvas.height;
+
+      ctx.clearRect(0, 0, w, h);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.03)';
+      ctx.fillRect(0, 0, w, h);
+
+      const bins = stats.histogram;
+      const maxCount = Math.max(1, ...bins);
+
+      const minV = stats.min ?? 0;
+      const maxV = stats.max ?? 0;
+      const selectedMin = Number(minElevInput.value);
+      const selectedMax = Number(maxElevInput.value);
+
+      const padX = 6;
+      const padTop = 6;
+      const padBottom = 12;
+      const innerW = w - padX * 2;
+      const innerH = h - padTop - padBottom;
+      const barW = innerW / bins.length;
+
+      const range = Math.max(1, maxV - minV);
+      const selMinT = clamp((selectedMin - minV) / range, 0, 1);
+      const selMaxT = clamp((selectedMax - minV) / range, 0, 1);
+
+      const selX = padX + innerW * selMinT;
+      const selW = innerW * (selMaxT - selMinT);
+
+      ctx.fillStyle = 'rgba(255,0,0,0.10)';
+      ctx.fillRect(selX, padTop, Math.max(0, selW), innerH);
+
+      for (let i = 0; i < bins.length; i++) {
+        const x = padX + i * barW;
+        const y = padTop;
+        const barH = innerH * (bins[i] / maxCount);
+        const by = padTop + innerH - barH;
+
+        const binStart = minV + (i / bins.length) * range;
+        const binEnd = minV + ((i + 1) / bins.length) * range;
+        const inRange = !(binEnd < selectedMin || binStart > selectedMax);
+
+        ctx.fillStyle = inRange ? 'rgba(255,59,48,0.92)' : 'rgba(255,255,255,0.42)';
+        ctx.fillRect(x + 0.5, by, Math.max(1, barW - 1), barH);
+      }
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+      ctx.beginPath();
+      ctx.moveTo(padX, padTop + innerH + 0.5);
+      ctx.lineTo(padX + innerW, padTop + innerH + 0.5);
+      ctx.stroke();
+
+      const lineMinX = padX + innerW * selMinT;
+      const lineMaxX = padX + innerW * selMaxT;
+
+      ctx.strokeStyle = 'rgba(255,120,120,0.95)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(lineMinX, padTop);
+      ctx.lineTo(lineMinX, padTop + innerH);
+      ctx.moveTo(lineMaxX, padTop);
+      ctx.lineTo(lineMaxX, padTop + innerH);
+      ctx.stroke();
+
+      histMinEl.textContent = fmtMeters(minV);
+      histMidEl.textContent = fmtMeters((minV + maxV) / 2);
+      histMaxEl.textContent = fmtMeters(maxV);
+    }
+
+    async function computeVisibleHistogram(bounds, token) {
+      const minVals = [];
+      const bins = new Array(HIST_BINS).fill(0);
+
+      let minElev = Infinity;
+      let maxElev = -Infinity;
+      let samples = 0;
+
+      for (let y = 0; y < OVERLAY_SIZE; y += HIST_SAMPLE_STEP) {
+        const lat = lerp(bounds.north, bounds.south, (y + 0.5) / OVERLAY_SIZE);
+
+        for (let x = 0; x < OVERLAY_SIZE; x += HIST_SAMPLE_STEP) {
+          const lngUnwrapped = lerp(bounds.west, bounds.east, (x + 0.5) / OVERLAY_SIZE);
+          const elev = await getElevationAtLngLat(lngUnwrapped, lat, FIXED_DEM_ZOOM);
+          if (elev == null) continue;
+
+          minElev = Math.min(minElev, elev);
+          maxElev = Math.max(maxElev, elev);
+          minVals.push(elev);
+          samples++;
+        }
+
+        if (token !== renderToken) return null;
+        if (y % 32 === 0) {
+          histogramNoteEl.textContent = `Sampling… ${Math.round((y / OVERLAY_SIZE) * 100)}%`;
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+      }
+
+      if (!isFinite(minElev) || !isFinite(maxElev)) {
+        return {
+          min: 0,
+          max: 0,
+          histogram: bins,
+          samples: 0
+        };
+      }
+
+      const range = Math.max(1, maxElev - minElev);
+      for (const value of minVals) {
+        const idx = Math.min(
+          HIST_BINS - 1,
+          Math.floor(((value - minElev) / range) * HIST_BINS)
+        );
+        bins[idx]++;
+      }
+
+      return {
+        min: minElev,
+        max: maxElev,
+        histogram: bins,
+        samples
+      };
+    }
+
+    function applyVisibleStats(stats) {
+      lastVisibleStats = stats;
+      visibleMinEl.textContent = fmtMeters(stats.min);
+      visibleMaxEl.textContent = fmtMeters(stats.max);
+      histogramNoteEl.textContent = `${stats.samples.toLocaleString()} samples`;
+      drawHistogram(stats);
+    }
+
+    async function renderOverlayAndHistogram() {
+      if (!map || !map.isStyleLoaded()) return;
+      if (!map.getTerrain()) return;
+
+      const token = ++renderToken;
+      const bounds = getVisibleBounds();
+      const minElev = Number(minElevInput.value);
+      const maxElev = Number(maxElevInput.value);
+
+      setStatus('Fetching Terrain-RGB tiles…');
+      await prefetchVisibleTiles(bounds, FIXED_DEM_ZOOM);
+      if (token !== renderToken) return;
+
+      setStatus('Computing histogram…');
+      const stats = await computeVisibleHistogram(bounds, token);
+      if (!stats || token !== renderToken) return;
+      applyVisibleStats(stats);
+
+      setStatus('Rendering overlay…');
+      const image = overlayCtx.createImageData(OVERLAY_SIZE, OVERLAY_SIZE);
+      const data = image.data;
+
+      let painted = 0;
+      let sampled = 0;
+
+      for (let y = 0; y < OVERLAY_SIZE; y++) {
+        const lat = lerp(bounds.north, bounds.south, (y + 0.5) / OVERLAY_SIZE);
+
+        for (let x = 0; x < OVERLAY_SIZE; x++) {
+          const lngUnwrapped = lerp(bounds.west, bounds.east, (x + 0.5) / OVERLAY_SIZE);
+          const elev = await getElevationAtLngLat(lngUnwrapped, lat, FIXED_DEM_ZOOM);
+          const idx = (y * OVERLAY_SIZE + x) * 4;
+
+          if (elev != null) {
+            sampled++;
+            if (elev >= minElev && elev <= maxElev) {
+              data[idx] = 255;
+              data[idx + 1] = 0;
+              data[idx + 2] = 0;
+              data[idx + 3] = OVERLAY_ALPHA;
+              painted++;
+            }
+          }
+        }
+
+        if (token !== renderToken) return;
+
+        if (y % 24 === 0) {
+          setStatus(`Rendering overlay… ${Math.round((y / OVERLAY_SIZE) * 100)}%`);
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+      }
+
+      overlayCtx.putImageData(image, 0, 0);
+
+      const coords = getOverlayCoordinates();
+
+      if (!sourceReady) {
+        map.addSource('elevation-overlay', {
+          type: 'canvas',
+          canvas: overlayCanvas,
+          animate: false,
+          coordinates: coords
+        });
+
+        map.addLayer({
+          id: 'elevation-overlay-layer',
+          type: 'raster',
+          source: 'elevation-overlay',
+          paint: {
+            'raster-opacity': 0.92,
+            'raster-resampling': 'nearest',
+            'raster-fade-duration': 0
+          }
+        }, 'contours-minor');
+
+        sourceReady = true;
+      } else {
+        map.getSource('elevation-overlay').setCoordinates(coords);
+        map.triggerRepaint();
+      }
+
+      setStatus(
+        `Done. ${painted.toLocaleString()} of ${sampled.toLocaleString()} overlay samples are within ${fmtMeters(minElev)} to ${fmtMeters(maxElev)}.`
+      );
+    }
+
+    function scheduleRender(delay = 120) {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        renderOverlayAndHistogram().catch(err => {
+          console.error(err);
+          setStatus(`Error: ${err.message}`);
+        });
+      }, delay);
+    }
+
+    function fitToVisibleRange() {
+      if (lastVisibleStats.min == null || lastVisibleStats.max == null) return;
+      minElevInput.value = String(Math.round(lastVisibleStats.min / 10) * 10);
+      maxElevInput.value = String(Math.round(lastVisibleStats.max / 10) * 10);
+      updateLabels();
+      drawHistogram(lastVisibleStats);
+      scheduleRender(0);
+    }
+
+    function applyPreset(center, zoom, pitch, bearing, min, max) {
+      minElevInput.value = String(min);
+      maxElevInput.value = String(max);
+      updateLabels();
+      map.easeTo({ center, zoom, pitch, bearing, duration: 900 });
+      scheduleRender(950);
+    }
+
+    function addContourLayers() {
+      if (map.getSource('terrain-v2')) return;
+
+      map.addSource('terrain-v2', {
+        type: 'vector',
+        url: 'mapbox://mapbox.mapbox-terrain-v2'
+      });
+
+      map.addLayer({
+        id: 'contours-minor',
+        type: 'line',
+        source: 'terrain-v2',
+        'source-layer': 'contour',
+        minzoom: 9,
+        paint: {
+          'line-color': [
+            'case',
+            ['==', ['get', 'index'], 10], 'rgba(255,255,255,0.90)',
+            ['==', ['get', 'index'], 5], 'rgba(255,255,255,0.60)',
+            'rgba(255,255,255,0.28)'
+          ],
+          'line-width': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            9, ['case', ['>=', ['get', 'index'], 5], 0.6, 0.35],
+            14, ['case', ['>=', ['get', 'index'], 5], 1.4, 0.75]
+          ],
+          'line-opacity': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            9, 0.55,
+            14, 0.95
+          ]
+        }
+      });
+
+      map.addLayer({
+        id: 'contours-labels',
+        type: 'symbol',
+        source: 'terrain-v2',
+        'source-layer': 'contour',
+        minzoom: 11,
+        filter: ['>=', ['get', 'index'], 5],
+        layout: {
+          'symbol-placement': 'line',
+          'text-field': ['concat', ['to-string', ['get', 'ele']], ' m'],
+          'text-size': 10,
+          'symbol-spacing': 300,
+          'text-font': ['Open Sans Regular']
+        },
+        paint: {
+          'text-color': 'rgba(255,255,255,0.82)',
+          'text-halo-color': 'rgba(0,0,0,0.70)',
+          'text-halo-width': 1
+        }
+      });
+    }
+
+    updateLabels();
+
+    map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/mapbox/standard-satellite',
+      center: [-121.7603, 46.8523],
+      zoom: 10.4,
+      pitch: 70,
+      bearing: 25,
+      antialias: true
+    });
+
+    map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+
+    map.on('style.load', () => {
+      map.addSource('mapbox-dem', {
+        type: 'raster-dem',
+        url: 'mapbox://mapbox.mapbox-terrain-dem-v1',
+        tileSize: 512,
+        maxzoom: 14
+      });
+
+      map.setTerrain({
+        source: 'mapbox-dem',
+        exaggeration: 1.2
+      });
+
+      map.setFog({
+        'color': 'rgb(255,255,255)',
+        'high-color': 'rgb(36,92,223)',
+        'horizon-blend': 0.08
+      });
+
+      addContourLayers();
+      scheduleRender(300);
+    });
+
+    map.on('moveend', () => scheduleRender(60));
+    map.on('zoomend', () => scheduleRender(60));
+    map.on('rotateend', () => scheduleRender(60));
+    map.on('pitchend', () => scheduleRender(60));
+
+    minElevInput.addEventListener('input', () => {
+      updateLabels();
+      drawHistogram(lastVisibleStats);
+      scheduleRender(60);
+    });
+
+    maxElevInput.addEventListener('input', () => {
+      updateLabels();
+      drawHistogram(lastVisibleStats);
+      scheduleRender(60);
+    });
+
+    document.getElementById('refresh').addEventListener('click', () => scheduleRender(0));
+    document.getElementById('fitVisible').addEventListener('click', fitToVisibleRange);
+
+    document.getElementById('rainier').addEventListener('click', () => {
+      applyPreset([-121.7603, 46.8523], 10.4, 70, 25, 1500, 2600);
+    });
+
+    document.getElementById('alps').addEventListener('click', () => {
+      applyPreset([10.9, 46.55], 9.8, 68, 18, 1800, 3200);
+    });
+  </script>
+</body>
+</html>
