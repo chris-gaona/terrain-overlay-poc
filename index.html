@@ -413,7 +413,7 @@
   <div class="panel" id="panel">
     <div class="title">Terrain elevation filter</div>
     <div class="sub">
-      Worker-decoded Terrain-RGB tiles are draped onto terrain. The red overlay can be toggled, has a minimum zoom, and is limited to a 20 nautical mile radius around a chosen coordinate.
+      Worker-decoded Terrain-RGB tiles are draped onto terrain. The red overlay can be toggled, has a minimum zoom, and is limited to a 10 nautical mile radius around a chosen coordinate.
     </div>
 
     <div class="section">
@@ -443,7 +443,7 @@
         <button id="pickFromMap" class="secondary" type="button">Pick from map</button>
       </div>
       <div class="radius-note">
-        Red overlay is only shown within a 20 nautical mile radius of the selected center.
+        Red overlay is only shown within a 10 nautical mile radius of the selected center.
       </div>
     </div>
 
@@ -518,7 +518,7 @@
     const HIST_BINS = 40;
     const TILE_ALPHA = 175;
     const MAX_VISIBLE_TILE_BUFFER = 1;
-    const RADIUS_NM = 20;
+    const RADIUS_NM = 10;
     const RADIUS_METERS = RADIUS_NM * 1852;
     const OVERLAY_MIN_ZOOM = 9;
     const MAX_CONCURRENT_TILE_REQUESTS = 6;
